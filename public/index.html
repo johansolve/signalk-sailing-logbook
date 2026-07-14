@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logbook</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 data-i18n="title">Logbook</h1>
+    <span id="status" class="status"></span>
+  </header>
+
+  <main id="app">
+    <!-- List view -->
+    <section id="list-view">
+      <details class="scan">
+        <summary data-i18n="scanHistory">Scan history</summary>
+        <div class="scan-body">
+          <p class="hint" data-i18n="scanHint">Scans the InfluxDB history and creates any trips that are missing. Overlapping trips are skipped. Requires admin login.</p>
+          <div class="scan-controls">
+            <label><span data-i18n="from">From</span> <input type="date" id="scan-from"></label>
+            <label><span data-i18n="to">To</span> <input type="date" id="scan-to"></label>
+            <button id="scan-btn" data-i18n="scan">Scan</button>
+            <span id="scan-result" class="scan-result"></span>
+          </div>
+        </div>
+      </details>
+
+      <table class="trips">
+        <thead>
+          <tr>
+            <th data-i18n="date">Date</th>
+            <th data-i18n="route">From → To</th>
+            <th data-i18n="duration">Duration</th>
+            <th class="num" data-i18n="distance">Distance</th>
+            <th class="num" data-i18n="max">Max</th>
+            <th class="num" data-i18n="tacksGybes">Tacks/Gybes</th>
+          </tr>
+        </thead>
+        <tbody id="trip-rows"></tbody>
+      </table>
+      <p id="empty" class="empty" hidden data-i18n="noTrips">No trips yet. Go sailing, or scan the history above.</p>
+    </section>
+
+    <!-- Detail view -->
+    <section id="detail-view" hidden>
+      <button class="back" id="back-btn" data-i18n="back">← Back</button>
+      <div id="detail"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
