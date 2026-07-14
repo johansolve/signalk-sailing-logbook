@@ -21,7 +21,7 @@ const STR = {
     noWeather: 'No weather statistics (trip has no end time or no data).',
     maneuvers: 'Maneuvers', tacks: 'tacks', gybes: 'gybes', tack: 'Tack', gybe: 'Gybe',
     noneRecorded: 'None recorded.', copyReport: 'Copy logbook entry', deleteTrip: 'Delete trip',
-    removeManeuver: 'Remove this maneuver', stbd: 'S', port: 'P',
+    removeManeuver: 'Remove this maneuver', stbd: 'S', port: 'P', motor: 'motor',
     couldNotLoadTrips: 'Could not load trips: ', couldNotLoadTrip: 'Could not load trip: ',
     placesSaved: 'Places saved', couldNotSave: 'Could not save: ', adminLogin: 'requires admin login',
     copied: 'Logbook entry copied to clipboard', copyManually: 'Copy manually from the box below',
@@ -43,7 +43,7 @@ const STR = {
     noWeather: 'Ingen väderstatistik (tripen saknar sluttid eller data).',
     maneuvers: 'Manövrar', tacks: 'slag', gybes: 'gippar', tack: 'Slag', gybe: 'Gipp',
     noneRecorded: 'Inga registrerade.', copyReport: 'Kopiera loggbokstext', deleteTrip: 'Ta bort trip',
-    removeManeuver: 'Ta bort manövern', stbd: 'SB', port: 'BB',
+    removeManeuver: 'Ta bort manövern', stbd: 'SB', port: 'BB', motor: 'motor',
     couldNotLoadTrips: 'Kunde inte hämta trips: ', couldNotLoadTrip: 'Kunde inte hämta trip: ',
     placesSaved: 'Platser sparade', couldNotSave: 'Kunde inte spara: ', adminLogin: 'kräver admin-inloggning',
     copied: 'Loggbokstext kopierad till urklipp', copyManually: 'Kopiera manuellt från rutan nedan',
@@ -143,7 +143,7 @@ function renderList (trips) {
     const to = placeOf(tr, 'stop') || (tr.status === 'active' ? t('underWay') : '—')
     row.innerHTML = `
       <td>${fmtDate(tr.start_time)}</td>
-      <td class="route">${escapeHtml(from)} → ${escapeHtml(to)}</td>
+      <td class="route">${escapeHtml(from)} → ${escapeHtml(to)}${tr.motor ? ` <span class="tag">${t('motor')}</span>` : ''}</td>
       <td>${fmtDuration(tr.start_time, tr.stop_time)}</td>
       <td class="num">${tr.distance_nm != null ? n(tr.distance_nm, 1) + ' NM' : '–'}</td>
       <td class="num">${tr.max_sog != null ? n(toKnots(tr.max_sog), 1) + ' kn' : '–'}</td>
@@ -209,6 +209,7 @@ function renderDetail (data) {
        · ${fmtDuration(tr.start_time, tr.stop_time)}
        ${tr.distance_nm != null ? '· ' + n(tr.distance_nm, 1) + ' NM' : ''}
        ${tr.max_sog != null ? '· max ' + n(toKnots(tr.max_sog), 1) + ' kn' : ''}
+       ${tr.motor ? `· <span class="tag">${t('motor')}</span>` : ''}
        ${tr.origin === 'retro' ? '· <em>retro</em>' : ''}</p>
 
     <div class="places">

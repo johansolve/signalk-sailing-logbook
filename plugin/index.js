@@ -17,6 +17,7 @@ const influxLib = require('./lib/influx')
 const geocode = require('./lib/geocode')
 const report = require('./lib/report')
 const { createTripDetector, createManeuverDetector, KNOT } = require('./lib/detector')
+const { analyzeEngine } = require('./lib/engine')
 
 const NM = 1852 // metres per nautical mile
 
@@ -91,6 +92,16 @@ module.exports = function (app) {
         type: 'number',
         title: 'Ignore maneuvers within this many metres of the start/end position (harbour)',
         default: 200
+      },
+      engineAware: {
+        type: 'boolean',
+        title: 'Use alternator temperature and charge current to detect engine-on periods (ignore maneuvers made under engine, flag motoring trips)',
+        default: true
+      },
+      motorTripPercent: {
+        type: 'number',
+        title: 'Flag a trip as motoring when at least this percent of it was under engine',
+        default: 85
       },
       geocode: {
         type: 'boolean',
@@ -176,13 +187,18 @@ module.exports = function (app) {
       maxSog
     })
     // Now that the end is known, drop maneuvers near it in time or distance
-    // (dropping sails, mooring turns).
+    // (dropping sails, mooring turns) or while the engine was running, and
+    // record how much of the trip was under engine.
     const completed = db.getTrip(tripId)
+    const engine = await analyzeTripEngine(startMs, stopMs)
     db.getEvents(tripId).forEach((e) => {
-      if (isEdgeManeuver(completed, e.time, e.lat, e.lon)) {
+      if (isEdgeManeuver(completed, e.time, e.lat, e.lon) || engine.onAt(e.time)) {
         db.deleteEvent(e.id)
       }
     })
+    if (engine.share != null) {
+      db.setEngineShare(tripId, engine.share)
+    }
     geocodeTrip(tripId, 'stop', stopPos.lat, stopPos.lon)
   }
 
@@ -191,6 +207,25 @@ module.exports = function (app) {
   }
   function edgeRadiusM () {
     return options.maneuverEdgeRadiusMeters != null ? options.maneuverEdgeRadiusMeters : 200
+  }
+
+  // Engine-on analysis over a trip window, from alternator temp + charge current
+  // + SoC. Degrades to "always off / unknown" if the data isn't available.
+  async function analyzeTripEngine (startMs, stopMs) {
+    if (options.engineAware === false) {
+      return { onAt: () => false, share: null }
+    }
+    try {
+      const [temp, current, soc] = await Promise.all([
+        influx.alternatorSeries(startMs, stopMs, 120),
+        influx.currentSeries(startMs, stopMs, 120),
+        influx.socSeries(startMs, stopMs, 120)
+      ])
+      return analyzeEngine({ temp, current, soc })
+    } catch (e) {
+      app.error(`engine analysis failed: ${e.message}`)
+      return { onAt: () => false, share: null }
+    }
   }
 
   // Great-circle distance in metres.
@@ -311,8 +346,15 @@ module.exports = function (app) {
       origin: 'retro'
     })
 
+    // Engine-on analysis for maneuver gating and the motoring share.
+    const engine = await analyzeTripEngine(startMs, stopMs)
+    if (engine.share != null) {
+      db.setEngineShare(tripId, engine.share)
+    }
+
     // Reconstruct maneuvers from the TWA history for this trip, gated by the STW
-    // history on the same grid and by proximity (time and distance) to the ends.
+    // history on the same grid, by proximity (time and distance) to the ends,
+    // and by whether the engine was running.
     try {
       const twa = await influx.twaSeries(startMs, stopMs, 5)
       const stw = await influx.stwSeries(startMs, stopMs, 5)
@@ -342,7 +384,7 @@ module.exports = function (app) {
       twa.forEach(([t, angle]) => {
         md.feed(t, angle, stwAt.has(t) ? stwAt.get(t) : null, (m) => {
           const pos = nearestPos(m.time)
-          if (isEdgeManeuver(retroTrip, m.time, pos.lat, pos.lon)) {
+          if (isEdgeManeuver(retroTrip, m.time, pos.lat, pos.lon) || engine.onAt(m.time)) {
             return
           }
           db.addEvent({
@@ -392,6 +434,8 @@ module.exports = function (app) {
         minSailingSpeedKnots: 2,
         maneuverEdgeMarginMinutes: 5,
         maneuverEdgeRadiusMeters: 200,
+        engineAware: true,
+        motorTripPercent: 85,
         geocode: true,
         influxHost: 'localhost',
         influxPort: 8086,
@@ -501,8 +545,16 @@ module.exports = function (app) {
     return { trip: base.trip, events: base.events, hourly }
   }
 
+  // A trip counts as a motoring trip when the engine share meets the threshold.
+  function motorTrip (trip) {
+    const pct = options.motorTripPercent != null ? options.motorTripPercent : 85
+    return trip.engine_share != null && trip.engine_share * 100 >= pct
+  }
+
   function listHandler (req, res) {
-    const trips = db.listTrips().map((t) => Object.assign({}, t, db.countEvents(t.id)))
+    const trips = db.listTrips().map((t) =>
+      Object.assign({}, t, db.countEvents(t.id), { motor: motorTrip(t) })
+    )
     res.json(trips)
   }
   async function detailHandler (req, res) {
@@ -510,6 +562,7 @@ module.exports = function (app) {
     if (!data) {
       return res.status(404).json({ error: 'not found' })
     }
+    data.trip = Object.assign({}, data.trip, { motor: motorTrip(data.trip) })
     res.json(data)
   }
   async function reportHandler (req, res) {

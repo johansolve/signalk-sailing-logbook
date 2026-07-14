@@ -148,6 +148,18 @@ tbody tr:last-child td {
   font-weight: 500;
 }
 
+.tag {
+  display: inline-block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--gybe) 20%, transparent);
+  color: var(--gybe);
+  vertical-align: middle;
+}
+
 .empty, .hint {
   color: var(--muted);
 }

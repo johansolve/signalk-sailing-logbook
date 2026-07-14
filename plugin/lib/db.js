@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS trips (
   stop_place_manual  TEXT,
   distance_nm        REAL,
   max_sog            REAL,
+  engine_share       REAL,
   status             TEXT NOT NULL DEFAULT 'active',
   origin             TEXT NOT NULL DEFAULT 'live'
 );
@@ -52,6 +53,12 @@ function open (filePath) {
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
   db.exec(SCHEMA)
+  // Migration for databases created before engine_share existed.
+  try {
+    db.exec('ALTER TABLE trips ADD COLUMN engine_share REAL')
+  } catch (e) {
+    // column already exists
+  }
 
   const stmts = {
     insertTrip: db.prepare(
@@ -86,6 +93,7 @@ function open (filePath) {
        VALUES (@trip_id, @time, @type, @twa_before, @twa_after, @lat, @lon)`
     ),
     deleteEventById: db.prepare('DELETE FROM events WHERE id = ?'),
+    setEngineShare: db.prepare('UPDATE trips SET engine_share = @share WHERE id = @id'),
     getTrip: db.prepare('SELECT * FROM trips WHERE id = ?'),
     listTrips: db.prepare('SELECT * FROM trips ORDER BY start_time DESC'),
     activeTrip: db.prepare(
@@ -173,6 +181,10 @@ function open (filePath) {
 
     deleteEvent (id) {
       stmts.deleteEventById.run(id)
+    },
+
+    setEngineShare (id, share) {
+      stmts.setEngineShare.run({ id, share: share != null ? share : null })
     },
 
     getTrip (id) {

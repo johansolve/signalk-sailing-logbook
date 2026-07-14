@@ -20,6 +20,9 @@ const DEFAULT_PATHS = {
   awa: 'environment.wind.angleApparent',
   twd: 'environment.wind.directionTrue',
   heel: 'navigation.attitude.roll',
+  alternator: 'environment.alternator.temperature',
+  batteryCurrent: 'electrical.batteries.House.current',
+  stateOfCharge: 'electrical.batteries.House.capacity.stateOfCharge',
   position: 'navigation.position'
 }
 
@@ -178,6 +181,39 @@ function makeInflux (config) {
         `SELECT mean("value") AS v FROM "${m}" ` +
           `WHERE ${window(startMs, stopMs)} ` +
           `GROUP BY time(${stepSec || 30}s) fill(none)`
+      )
+      return res.values.map((v) => [v[0], v[1]]).filter((p) => p[1] != null)
+    },
+
+    // Alternator temperature series in °C (Kelvin is converted). Used to detect
+    // engine-on periods.
+    async alternatorSeries (startMs, stopMs, stepSec) {
+      const m = quoteMeasurement(paths.alternator)
+      const [res] = await run(
+        `SELECT mean("value") AS v FROM "${m}" ` +
+          `WHERE ${window(startMs, stopMs)} ` +
+          `GROUP BY time(${stepSec || 120}s) fill(none)`
+      )
+      return res.values
+        .map((v) => [v[0], v[1] == null ? null : v[1] > 200 ? v[1] - 273.15 : v[1]])
+        .filter((p) => p[1] != null)
+    },
+
+    // House battery current (A, positive = charging) and state of charge (0..1).
+    async currentSeries (startMs, stopMs, stepSec) {
+      const m = quoteMeasurement(paths.batteryCurrent)
+      const [res] = await run(
+        `SELECT mean("value") AS v FROM "${m}" WHERE ${window(startMs, stopMs)} ` +
+          `GROUP BY time(${stepSec || 120}s) fill(none)`
+      )
+      return res.values.map((v) => [v[0], v[1]]).filter((p) => p[1] != null)
+    },
+
+    async socSeries (startMs, stopMs, stepSec) {
+      const m = quoteMeasurement(paths.stateOfCharge)
+      const [res] = await run(
+        `SELECT mean("value") AS v FROM "${m}" WHERE ${window(startMs, stopMs)} ` +
+          `GROUP BY time(${stepSec || 120}s) fill(none)`
       )
       return res.values.map((v) => [v[0], v[1]]).filter((p) => p[1] != null)
     },
