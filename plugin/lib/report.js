@@ -62,7 +62,7 @@ const STR = {
 // first-vs-last comparisons of the hourly stats. Clauses drop out when a trend
 // is weak, so it degrades to a plain statement rather than inventing a story.
 // Returns null if there isn't enough data.
-function windSummary (hourly, s, toDeg, fmt) {
+function windSummary (hourly, s, toDeg, fmt, motor) {
   if (!hourly) {
     return null
   }
@@ -140,17 +140,18 @@ function windSummary (hourly, s, toDeg, fmt) {
   if (trend.length) {
     str += ', ' + trend.join(s.and)
   }
-  if (sail) {
+  // Point of sail and heel are sailing concepts; drop them for motoring trips.
+  if (sail && !motor) {
     str += ' ' + sail
   }
-  const tail = [steadiness, heel].filter(Boolean)
+  const tail = [steadiness, motor ? '' : heel].filter(Boolean)
   if (tail.length) {
     str += '; ' + tail.join(', ')
   }
   return str + '.'
 }
 
-function buildReport (trip, events, hourly, lang) {
+function buildReport (trip, events, hourly, lang, motor) {
   const s = STR[lang] || STR.en
   const locale = s.locale
 
@@ -228,22 +229,24 @@ function buildReport (trip, events, hourly, lang) {
 
   const sp = `${startPlace} ${clock(trip.start_time)}${pos(trip.start_lat, trip.start_lon)}`
   const ep = `${stopPlace} ${clock(trip.stop_time)}${pos(trip.stop_lat, trip.stop_lon)}`
+  // Motoring trips are labelled as such and omit the maneuver reporting.
+  const tail = motor ? '' : ` ${maneuverPhrase}.`
   if (lang === 'sv') {
     lines.push(
-      `Segling ${dateStr(trip.start_time)}. Avgång ${sp}, ankomst ${ep}. ` +
-      `Restid ${dur}${distFrag}${maxFrag}. ${maneuverPhrase}.`
+      `${motor ? 'Motortur' : 'Segling'} ${dateStr(trip.start_time)}. Avgång ${sp}, ankomst ${ep}. ` +
+      `Restid ${dur}${distFrag}${maxFrag}.${tail}`
     )
   } else {
     lines.push(
-      `Passage ${dateStr(trip.start_time)}. Departed ${sp}, arrived ${ep}. ` +
-      `${dur}${distFrag}${maxFrag}. ${maneuverPhrase}.`
+      `${motor ? 'Motoring' : 'Passage'} ${dateStr(trip.start_time)}. Departed ${sp}, arrived ${ep}. ` +
+      `${dur}${distFrag}${maxFrag}.${tail}`
     )
   }
 
   lines.push('')
 
   // ---- derived wind narrative above the hourly detail ----
-  const wind = windSummary(hourly, s, toDeg, fmt)
+  const wind = windSummary(hourly, s, toDeg, fmt, motor)
   if (wind) {
     lines.push(wind)
     lines.push('')

@@ -571,7 +571,8 @@ module.exports = function (app) {
       return res.status(404).send('not found')
     }
     const lang = req.query.lang === 'sv' ? 'sv' : 'en'
-    res.type('text/plain; charset=utf-8').send(report.buildReport(data.trip, data.events, data.hourly, lang))
+    const motor = motorTrip(data.trip)
+    res.type('text/plain; charset=utf-8').send(report.buildReport(data.trip, data.events, data.hourly, lang, motor))
   }
 
   // Read-only routes, namespaced and mounted under /signalk/v1/api so the
