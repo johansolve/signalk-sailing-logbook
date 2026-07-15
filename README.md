@@ -5,6 +5,8 @@ from boat speed, marks tacks and gybes, and reports hourly wind and heel
 statistics computed on demand from the onboard InfluxDB. A built-in web app lists
 your trips and produces a ready-to-paste logbook entry for each one.
 
+![The web app: trip list and a trip detail with hourly weather](docs/screenshot.gif)
+
 ## Features
 
 - **Automatic trip detection** from `navigation.speedOverGround` with configurable
