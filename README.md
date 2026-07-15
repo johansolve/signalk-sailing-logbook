@@ -26,6 +26,10 @@ your trips and produces a ready-to-paste logbook entry for each one.
   deviation), TWA, AWA and heel (degrees), each as mean with a p10–p90 range
   (the "significant" min/max, with raw extremes filtered out). TWA/AWA also show
   the dominant tack side.
+- **Motoring vs sailing**: reads `propulsion.<n>.state` to drop maneuvers made
+  under engine and to flag motoring trips (their report omits tacks/gybes and the
+  point-of-sail wording). The engine state comes from a separate provider — this
+  plugin does no engine detection of its own (see Requirements).
 - **Place names** via OpenStreetMap Nominatim (best-effort, always editable).
 - **Retrospective scan**: reconstruct past trips from InfluxDB history for any
   date range, using the exact same detection logic as live.
@@ -44,6 +48,18 @@ your trips and produces a ready-to-paste logbook entry for each one.
   `environment.wind.directionTrue`, `navigation.attitude.roll`.
 - **Node.js ≥ 22.5** — storage uses the built-in `node:sqlite`, so there is no
   native module to compile.
+- **A `propulsion.<n>.state` provider** (`started` / `stopped`) for the
+  motoring/sailing distinction. The logbook reads this path from InfluxDB; it has
+  no built-in engine detection. Any of these works:
+  - [`signalk-engine-state`](https://www.npmjs.com/package/signalk-engine-state)
+    — companion plugin; infers engine state from alternator temperature, charge
+    current and wind-vs-speed, and also backfills history. **Recommended.**
+  - [`signalk-alternator-engine-on`](https://www.npmjs.com/package/signalk-alternator-engine-on)
+    — infers it from alternator power.
+  - Native **NMEA 2000 engine data** (PGN 127489), if you have an engine gateway.
+
+  Without a provider the plugin still works; trips just aren't classified as
+  motoring and harbour turns under engine may be counted as maneuvers.
 
 ## Install
 

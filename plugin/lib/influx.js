@@ -20,9 +20,7 @@ const DEFAULT_PATHS = {
   awa: 'environment.wind.angleApparent',
   twd: 'environment.wind.directionTrue',
   heel: 'navigation.attitude.roll',
-  alternator: 'environment.alternator.temperature',
-  batteryCurrent: 'electrical.batteries.House.current',
-  stateOfCharge: 'electrical.batteries.House.capacity.stateOfCharge',
+  engineState: 'propulsion.0.state',
   position: 'navigation.position'
 }
 
@@ -67,7 +65,14 @@ function makeInflux (config) {
   }
 
   function window (a, b) {
-    return `time >= ${a}ms AND time <= ${b}ms`
+    // Coerce to integer epoch-ms so nothing but a number can reach the query,
+    // even if a caller ever passes an unsanitised value.
+    const lo = Math.trunc(Number(a))
+    const hi = Math.trunc(Number(b))
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+      throw new Error('window bounds must be numeric epoch-ms')
+    }
+    return `time >= ${lo}ms AND time <= ${hi}ms`
   }
 
   function rowsToObjects (result) {
@@ -185,37 +190,64 @@ function makeInflux (config) {
       return res.values.map((v) => [v[0], v[1]]).filter((p) => p[1] != null)
     },
 
-    // Alternator temperature series in °C (Kelvin is converted). Used to detect
-    // engine-on periods.
-    async alternatorSeries (startMs, stopMs, stepSec) {
-      const m = quoteMeasurement(paths.alternator)
-      const [res] = await run(
-        `SELECT mean("value") AS v FROM "${m}" ` +
-          `WHERE ${window(startMs, stopMs)} ` +
-          `GROUP BY time(${stepSec || 120}s) fill(none)`
-      )
-      return res.values
-        .map((v) => [v[0], v[1] == null ? null : v[1] > 200 ? v[1] - 273.15 : v[1]])
-        .filter((p) => p[1] != null)
-    },
-
-    // House battery current (A, positive = charging) and state of charge (0..1).
-    async currentSeries (startMs, stopMs, stepSec) {
-      const m = quoteMeasurement(paths.batteryCurrent)
-      const [res] = await run(
-        `SELECT mean("value") AS v FROM "${m}" WHERE ${window(startMs, stopMs)} ` +
-          `GROUP BY time(${stepSec || 120}s) fill(none)`
-      )
-      return res.values.map((v) => [v[0], v[1]]).filter((p) => p[1] != null)
-    },
-
-    async socSeries (startMs, stopMs, stepSec) {
-      const m = quoteMeasurement(paths.stateOfCharge)
-      const [res] = await run(
-        `SELECT mean("value") AS v FROM "${m}" WHERE ${window(startMs, stopMs)} ` +
-          `GROUP BY time(${stepSec || 120}s) fill(none)`
-      )
-      return res.values.map((v) => [v[0], v[1]]).filter((p) => p[1] != null)
+    // Propulsion state history published by signalk-engine-state, bracketed to
+    // the trip window as [[startMs, state], ...transitions..., [stopMs, state]].
+    //
+    // State is a step function that only changes on transitions, so the raw
+    // in-window rows are sparse and, crucially, omit whatever state was already
+    // in effect at startMs. We therefore seed the left edge with the last value
+    // at or before startMs and close the right edge at stopMs, so both the share
+    // integral and the onAt step function are correct across the whole window.
+    //
+    // Returns [] (and the caller falls back to the alternator/current
+    // derivation) when there is no state data at all for the window, e.g. trips
+    // before the plugin ran or an influxdb writer that doesn't store this string
+    // path.
+    async engineStateSeries (startMs, stopMs) {
+      const m = quoteMeasurement(paths.engineState)
+      const seedTime = Math.trunc(Number(startMs))
+      let results
+      try {
+        results = await run([
+          `SELECT last("value") AS v FROM "${m}" WHERE time <= ${seedTime}ms`,
+          `SELECT "value" AS v FROM "${m}" WHERE ${window(startMs, stopMs)}`
+        ])
+      } catch (e) {
+        return []
+      }
+      const seedRow = rowsToObjects(results[0])[0]
+      // A seed older than this predates the plugin running for this stretch, so
+      // it says nothing about the trip; don't let one stale value shadow the
+      // alternator fallback for a whole trip.
+      const seedMaxAgeMs = 24 * 3600 * 1000
+      const seedFresh =
+        seedRow != null &&
+        seedRow.v != null &&
+        seedRow.time != null &&
+        startMs - seedRow.time <= seedMaxAgeMs
+      // Drop any point exactly at startMs; the seeded left bracket covers it.
+      const inWindow = results[1].values
+        .map((v) => [v[0], v[1]])
+        .filter((p) => p[1] != null && p[0] > startMs)
+      let leftState
+      if (seedFresh) {
+        leftState = seedRow.v
+      } else if (inWindow.length) {
+        // No trustworthy seed, but there are transitions inside the window, so the
+        // plugin was publishing during the trip: assume the first in-window state
+        // held just before it.
+        leftState = inWindow[0][1]
+      } else {
+        // No trustworthy state for this window -> caller falls back to the
+        // alternator/current derivation.
+        return []
+      }
+      const series = [[startMs, leftState], ...inWindow]
+      const last = series[series.length - 1]
+      if (last[0] < stopMs) {
+        series.push([stopMs, last[1]])
+      }
+      return series
     },
 
     // Downsampled STW series (m/s) on the same grid as twaSeries, used to gate

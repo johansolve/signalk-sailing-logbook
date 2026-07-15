@@ -266,15 +266,23 @@ function buildReport (trip, events, hourly, lang, motor) {
       const twa = h.twa || {}
       const awa = h.awa || {}
       const heel = h.heel || {}
+      // Only render fields that actually have data for the hour, so a partial
+      // hour doesn't fill the line with dashes.
       const parts = [
-        spd('TWS', tws.mean, tws.p10, tws.p90, 'm/s'),
-        spd('STW', toKnots(stw.mean), toKnots(stw.p10), toKnots(stw.p90), 'kn'),
-        twd.mean != null ? `TWD ${fmt(toDeg(twd.mean))}° (±${fmt(toDeg(twd.std))})` : 'TWD –',
-        ang('TWA', twa),
-        ang('AWA', awa),
-        ang(s.heel, heel)
-      ]
-      lines.push(`${hourLabel(h.time)}:  ${parts.join(', ')}`)
+        tws.mean != null ? spd('TWS', tws.mean, tws.p10, tws.p90, 'm/s') : null,
+        stw.mean != null ? spd('STW', toKnots(stw.mean), toKnots(stw.p10), toKnots(stw.p90), 'kn') : null,
+        twd.mean != null
+          ? (twd.std != null
+              ? `TWD ${fmt(toDeg(twd.mean))}° (±${fmt(toDeg(twd.std))})`
+              : `TWD ${fmt(toDeg(twd.mean))}°`)
+          : null,
+        twa.mean != null ? ang('TWA', twa) : null,
+        awa.mean != null ? ang('AWA', awa) : null,
+        heel.mean != null ? ang(s.heel, heel) : null
+      ].filter(Boolean)
+      if (parts.length) {
+        lines.push(`${hourLabel(h.time)}:  ${parts.join(', ')}`)
+      }
     })
   }
 

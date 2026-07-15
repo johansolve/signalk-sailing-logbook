@@ -17,7 +17,7 @@ const influxLib = require('./lib/influx')
 const geocode = require('./lib/geocode')
 const report = require('./lib/report')
 const { createTripDetector, createManeuverDetector, KNOT } = require('./lib/detector')
-const { analyzeEngine } = require('./lib/engine')
+const { fromStateSeries } = require('./lib/engine')
 
 const NM = 1852 // metres per nautical mile
 
@@ -136,7 +136,8 @@ module.exports = function (app) {
     geocode
       .reverse(lat, lon)
       .then((name) => {
-        if (name) {
+        // The plugin may have stopped during the reverse-geocode request.
+        if (name && db) {
           db.setGeocode(tripId, which === 'start' ? { startPlace: name } : { stopPlace: name })
         }
       })
@@ -179,25 +180,39 @@ module.exports = function (app) {
     } catch (e) {
       app.error(`trip aggregate failed: ${e.message}`)
     }
-    db.completeTrip(tripId, {
-      stopTime: stopMs,
-      stopLat: stopPos.lat,
-      stopLon: stopPos.lon,
-      distanceNm,
-      maxSog
-    })
-    // Now that the end is known, drop maneuvers near it in time or distance
-    // (dropping sails, mooring turns) or while the engine was running, and
-    // record how much of the trip was under engine.
-    const completed = db.getTrip(tripId)
-    const engine = await analyzeTripEngine(startMs, stopMs)
-    db.getEvents(tripId).forEach((e) => {
-      if (isEdgeManeuver(completed, e.time, e.lat, e.lon) || engine.onAt(e.time)) {
-        db.deleteEvent(e.id)
+    // Everything below touches the DB after an await, so guard against the plugin
+    // having been stopped meanwhile (db set to null) and against any DB error, so
+    // a late completion can't crash as an unhandled rejection.
+    try {
+      if (!db) {
+        return
       }
-    })
-    if (engine.share != null) {
-      db.setEngineShare(tripId, engine.share)
+      db.completeTrip(tripId, {
+        stopTime: stopMs,
+        stopLat: stopPos.lat,
+        stopLon: stopPos.lon,
+        distanceNm,
+        maxSog
+      })
+      // Now that the end is known, drop maneuvers near it in time or distance
+      // (dropping sails, mooring turns) or while the engine was running, and
+      // record how much of the trip was under engine.
+      const completed = db.getTrip(tripId)
+      const engine = await analyzeTripEngine(startMs, stopMs)
+      if (!db) {
+        return
+      }
+      db.getEvents(tripId).forEach((e) => {
+        if (isEdgeManeuver(completed, e.time, e.lat, e.lon) || engine.onAt(e.time)) {
+          db.deleteEvent(e.id)
+        }
+      })
+      if (engine.share != null) {
+        db.setEngineShare(tripId, engine.share)
+      }
+    } catch (e) {
+      app.error(`trip completion failed: ${e.message}`)
+      return
     }
     geocodeTrip(tripId, 'stop', stopPos.lat, stopPos.lon)
   }
@@ -209,19 +224,20 @@ module.exports = function (app) {
     return options.maneuverEdgeRadiusMeters != null ? options.maneuverEdgeRadiusMeters : 200
   }
 
-  // Engine-on analysis over a trip window, from alternator temp + charge current
-  // + SoC. Degrades to "always off / unknown" if the data isn't available.
+  // Engine-on analysis over a trip window, read from propulsion.<n>.state as
+  // published (live) and backfilled (history) by signalk-engine-state. The
+  // detection logic lives there, not here. Degrades to "unknown / not motor"
+  // when there is no state for the window.
   async function analyzeTripEngine (startMs, stopMs) {
     if (options.engineAware === false) {
       return { onAt: () => false, share: null }
     }
     try {
-      const [temp, current, soc] = await Promise.all([
-        influx.alternatorSeries(startMs, stopMs, 120),
-        influx.currentSeries(startMs, stopMs, 120),
-        influx.socSeries(startMs, stopMs, 120)
-      ])
-      return analyzeEngine({ temp, current, soc })
+      const fromState = fromStateSeries(await influx.engineStateSeries(startMs, stopMs))
+      if (fromState) {
+        return fromState
+      }
+      return { onAt: () => false, share: null }
     } catch (e) {
       app.error(`engine analysis failed: ${e.message}`)
       return { onAt: () => false, share: null }
@@ -516,6 +532,10 @@ module.exports = function (app) {
     }
     tripDetector = null
     maneuverDetector = null
+    // Drop cached live samples so a restart doesn't seed a new trip with a stale
+    // position or speed before fresh deltas arrive.
+    lastPosition = null
+    lastSTW = null
   }
 
   // ---- HTTP: read via signalKApiRoutes, writes/scan via registerWithRouter --
@@ -551,28 +571,66 @@ module.exports = function (app) {
     return trip.engine_share != null && trip.engine_share * 100 >= pct
   }
 
+  // Guard route handlers that run after the plugin may have stopped (db closed).
+  function dbGone (res) {
+    if (!db) {
+      res.status(503).json({ error: 'plugin stopped' })
+      return true
+    }
+    return false
+  }
   function listHandler (req, res) {
+    if (dbGone(res)) {
+      return
+    }
     const trips = db.listTrips().map((t) =>
       Object.assign({}, t, db.countEvents(t.id), { motor: motorTrip(t) })
     )
     res.json(trips)
   }
-  async function detailHandler (req, res) {
-    const data = await detailWithStats(parseInt(req.params.id, 10))
-    if (!data) {
-      return res.status(404).json({ error: 'not found' })
+  // Parse a numeric :id route param, or null if it isn't a positive integer.
+  // Strict: "5abc" is rejected, not silently read as 5.
+  function tripIdParam (req) {
+    if (!/^\d+$/.test(req.params.id)) {
+      return null
     }
-    data.trip = Object.assign({}, data.trip, { motor: motorTrip(data.trip) })
-    res.json(data)
+    const id = parseInt(req.params.id, 10)
+    return Number.isInteger(id) && id > 0 ? id : null
+  }
+  async function detailHandler (req, res) {
+    const id = tripIdParam(req)
+    if (id == null) {
+      return res.status(400).json({ error: 'invalid id' })
+    }
+    try {
+      const data = await detailWithStats(id)
+      if (!data) {
+        return res.status(404).json({ error: 'not found' })
+      }
+      data.trip = Object.assign({}, data.trip, { motor: motorTrip(data.trip) })
+      res.json(data)
+    } catch (e) {
+      app.error(`detail failed: ${e.message}`)
+      res.status(500).json({ error: e.message })
+    }
   }
   async function reportHandler (req, res) {
-    const data = await detailWithStats(parseInt(req.params.id, 10))
-    if (!data) {
-      return res.status(404).send('not found')
+    const id = tripIdParam(req)
+    if (id == null) {
+      return res.status(400).send('invalid id')
     }
-    const lang = req.query.lang === 'sv' ? 'sv' : 'en'
-    const motor = motorTrip(data.trip)
-    res.type('text/plain; charset=utf-8').send(report.buildReport(data.trip, data.events, data.hourly, lang, motor))
+    try {
+      const data = await detailWithStats(id)
+      if (!data) {
+        return res.status(404).send('not found')
+      }
+      const lang = req.query.lang === 'sv' ? 'sv' : 'en'
+      const motor = motorTrip(data.trip)
+      res.type('text/plain; charset=utf-8').send(report.buildReport(data.trip, data.events, data.hourly, lang, motor))
+    } catch (e) {
+      app.error(`report failed: ${e.message}`)
+      res.status(500).send(e.message)
+    }
   }
 
   // Read-only routes, namespaced and mounted under /signalk/v1/api so the
@@ -592,38 +650,75 @@ module.exports = function (app) {
     router.get('/trips/:id', detailHandler)
     router.get('/trips/:id/report', reportHandler)
 
+    // A place is either a non-empty string or null (to clear it).
+    const cleanPlace = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null)
+
     router.put('/trips/:id/place', (req, res) => {
-      const id = parseInt(req.params.id, 10)
+      const id = tripIdParam(req)
+      if (id == null) {
+        return res.status(400).json({ error: 'invalid id' })
+      }
+      const body = req.body || {}
+      if (
+        (body.startPlace != null && typeof body.startPlace !== 'string') ||
+        (body.stopPlace != null && typeof body.stopPlace !== 'string')
+      ) {
+        return res.status(400).json({ error: 'startPlace/stopPlace must be strings' })
+      }
+      if (dbGone(res)) {
+        return
+      }
       if (!db.getTrip(id)) {
         return res.status(404).json({ error: 'not found' })
       }
       db.setManualPlace(id, {
-        startPlace: req.body.startPlace != null ? req.body.startPlace : null,
-        stopPlace: req.body.stopPlace != null ? req.body.stopPlace : null
+        startPlace: cleanPlace(body.startPlace),
+        stopPlace: cleanPlace(body.stopPlace)
       })
       res.json(db.getTrip(id))
     })
 
     router.delete('/trips/:id', (req, res) => {
-      const id = parseInt(req.params.id, 10)
+      const id = tripIdParam(req)
+      if (id == null) {
+        return res.status(400).json({ error: 'invalid id' })
+      }
+      if (dbGone(res)) {
+        return
+      }
       db.deleteTrip(id)
       res.json({ ok: true })
     })
 
     // Manually remove a single maneuver (e.g. a false tack from a motoring leg).
     router.delete('/events/:id', (req, res) => {
-      db.deleteEvent(parseInt(req.params.id, 10))
+      const id = tripIdParam(req)
+      if (id == null) {
+        return res.status(400).json({ error: 'invalid id' })
+      }
+      if (dbGone(res)) {
+        return
+      }
+      db.deleteEvent(id)
       res.json({ ok: true })
     })
 
     router.post('/scan', async (req, res) => {
-      const from = parseInt(req.body.from, 10)
-      const to = parseInt(req.body.to, 10)
+      const body = req.body || {}
+      const from = parseInt(body.from, 10)
+      const to = parseInt(body.to, 10)
       if (!from || !to || to <= from) {
         return res.status(400).json({ error: 'from/to (ms epoch) required, to > from' })
       }
+      let stepSec
+      if (body.stepSec != null) {
+        stepSec = parseInt(body.stepSec, 10)
+        if (!Number.isInteger(stepSec) || stepSec <= 0) {
+          return res.status(400).json({ error: 'stepSec must be a positive integer' })
+        }
+      }
       try {
-        const result = await scan(from, to, req.body.stepSec)
+        const result = await scan(from, to, stepSec)
         res.json(result)
       } catch (e) {
         app.error(`scan failed: ${e.message}`)

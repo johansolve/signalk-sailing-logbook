@@ -31,6 +31,9 @@ function createTripDetector (opts) {
   return {
     // onStart(timeMs) / onStop(timeMs) are optional callbacks.
     feed (timeMs, sog, onStart, onStop) {
+      if (typeof timeMs !== 'number' || Number.isNaN(timeMs)) {
+        return
+      }
       if (typeof sog !== 'number' || Number.isNaN(sog)) {
         return
       }
@@ -129,6 +132,9 @@ function createManeuverDetector (opts) {
   return {
     // speed is the boat's speed (m/s) at this sample; pass null to skip gating.
     feed (timeMs, twa, speed, onManeuver) {
+      if (typeof timeMs !== 'number' || Number.isNaN(timeMs)) {
+        return
+      }
       if (typeof twa !== 'number' || Number.isNaN(twa)) {
         return
       }

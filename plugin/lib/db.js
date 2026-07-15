@@ -57,7 +57,11 @@ function open (filePath) {
   try {
     db.exec('ALTER TABLE trips ADD COLUMN engine_share REAL')
   } catch (e) {
-    // column already exists
+    // Expected on an up-to-date DB (the column is already in SCHEMA). Only that
+    // case is benign; anything else (locked, corrupt) must surface, not hide.
+    if (!/duplicate column/i.test(e.message)) {
+      throw e
+    }
   }
 
   const stmts = {
@@ -104,9 +108,12 @@ function open (filePath) {
       "SELECT type, COUNT(*) AS n FROM events WHERE trip_id = ? GROUP BY type"
     ),
     overlapping: db.prepare(
+      // An active trip (stop_time NULL) is still ongoing, so it overlaps any
+      // window reaching its start; treating its end as start_time would collapse
+      // it to a point and let a scan create a duplicate inside a live trip.
       `SELECT * FROM trips
         WHERE start_time <= @stop_time
-          AND COALESCE(stop_time, start_time) >= @start_time
+          AND (stop_time IS NULL OR stop_time >= @start_time)
         LIMIT 1`
     ),
     deleteTrip: db.prepare('DELETE FROM trips WHERE id = ?')
