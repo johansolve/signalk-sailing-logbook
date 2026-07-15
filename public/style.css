@@ -396,7 +396,11 @@ h3 {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 1rem;
-  white-space: pre;
+  /* Prose lines wrap within the box; the hourly data rows below opt out. */
+  white-space: pre-wrap;
   overflow-x: auto;
   font: 13px/1.45 ui-monospace, "SF Mono", Menlo, monospace;
+}
+.report .nowrap {
+  white-space: pre;
 }

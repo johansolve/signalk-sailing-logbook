@@ -309,7 +309,7 @@ function renderDetail (data) {
       if (ev.target.closest('.ev-del')) {
         return
       }
-      showManeuverOnTrack(data.events[parseInt(li.getAttribute('data-idx'), 10)])
+      openManeuverPopup(data.events[parseInt(li.getAttribute('data-idx'), 10)], true)
     })
   })
 
@@ -368,9 +368,10 @@ function nearestPoint (map, latlng, points) {
   return best
 }
 
-// A moment's conditions for the click popup: time, then speeds, wind, pointing
-// angles and heel — only the fields that actually have a value.
-function snapContent (p) {
+// A moment's conditions for the click popup: an optional label (the maneuver
+// type), the time, then speeds, wind, pointing angles and heel — only the
+// fields that actually have a value.
+function snapContent (p, label) {
   const rows = []
   const speed = []
   if (p.sog != null) {
@@ -405,12 +406,19 @@ function snapContent (p) {
   if (p.heel != null) {
     rows.push(`${t('heel')} ${n(Math.abs(toDeg(p.heel)))}°`)
   }
-  return `<div class="snap"><strong>${fmtTime(p.t)}</strong>${rows.map((r) => `<span>${r}</span>`).join('')}</div>`
+  const head = `<strong>${label ? escapeHtml(label) + ' · ' : ''}${fmtTime(p.t)}</strong>`
+  return `<div class="snap">${head}${rows.map((r) => `<span>${r}</span>`).join('')}</div>`
 }
 
-// From a maneuver-row click: locate the moment on the track (the point nearest
-// in time), scroll the map into view, pan there and open its snapshot popup.
-function showManeuverOnTrack (ev) {
+function maneuverLabel (ev) {
+  return ev.type === 'tack' ? t('tack') : t('gybe')
+}
+
+// Open a maneuver's snapshot popup on the track, at the point nearest in time,
+// labelled with the maneuver type. `pan` (a list-row click, where the map may
+// be scrolled out of view) also brings the map into view and centres it; a
+// marker click on the map itself leaves the view put.
+function openManeuverPopup (ev, pan) {
   if (!ev || !trackMap || !trackPoints.length) {
     return
   }
@@ -426,9 +434,11 @@ function showManeuverOnTrack (ev) {
   if (!best) {
     return
   }
-  trackMap.getContainer().scrollIntoView({ behavior: 'smooth', block: 'center' })
-  trackMap.panTo([best.lat, best.lon])
-  L.popup().setLatLng([best.lat, best.lon]).setContent(snapContent(best)).openOn(trackMap)
+  if (pan) {
+    trackMap.getContainer().scrollIntoView({ behavior: 'smooth', block: 'center' })
+    trackMap.panTo([best.lat, best.lon])
+  }
+  L.popup().setLatLng([best.lat, best.lon]).setContent(snapContent(best, maneuverLabel(ev))).openOn(trackMap)
 }
 
 // Fetch the downsampled position+SOG track and draw it on a Leaflet map with an
@@ -526,7 +536,10 @@ function drawTrack (host, points, events) {
       weight: 1,
       fillColor: e.type === 'gybe' ? gybeColor : tackColor,
       fillOpacity: 1
-    }).addTo(map).bindTooltip(`${e.type === 'tack' ? t('tack') : t('gybe')} · ${fmtTime(e.time)}`)
+    })
+      .addTo(map)
+      .bindTooltip(`${maneuverLabel(e)} · ${fmtTime(e.time)}`)
+      .on('click', () => openManeuverPopup(e, false))
   })
 
   // Start and end, larger and ringed so they stand out from the heat-line.
@@ -620,6 +633,15 @@ async function savePlaces (id, named) {
   }
 }
 
+// Render the report so prose lines wrap within the box while the hourly data
+// rows (which start "HH:  " and are column-aligned) stay on one line and scroll.
+// The clipboard still gets the raw text, unchanged.
+function reportHtml (text) {
+  return text.split('\n').map((line) =>
+    /^\d{2}:\s/.test(line) ? `<span class="nowrap">${escapeHtml(line)}</span>` : escapeHtml(line)
+  ).join('\n')
+}
+
 async function copyReport (id) {
   try {
     const r = await fetch(`${READ}/trips/${id}/report?lang=${LANG}`)
@@ -628,7 +650,7 @@ async function copyReport (id) {
     }
     const text = await r.text()
     const pre = $('#report-preview')
-    pre.textContent = text
+    pre.innerHTML = reportHtml(text)
     pre.hidden = false
     try {
       await navigator.clipboard.writeText(text)

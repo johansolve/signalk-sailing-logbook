@@ -7,7 +7,7 @@ It detects trips from boat speed, marks tacks and gybes, and reports hourly wind
 and heel statistics computed on demand from the onboard InfluxDB. A built-in web
 app lists your trips and produces a ready-to-paste logbook entry for each one.
 
-![The web app: a trip detail with hourly weather, motoring hours and maneuvers](docs/screenshot.png)
+![The web app: a trip detail with the speed-coloured track map, hourly weather and the maneuver list](docs/screenshot.png)
 
 ## Features
 
