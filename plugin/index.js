@@ -225,7 +225,7 @@ module.exports = function (app) {
   }
 
   // Engine-on analysis over a trip window, read from propulsion.<n>.state as
-  // published (live) and backfilled (history) by signalk-engine-state. The
+  // published (live) and backfilled (history) by signalk-derived-engine-state. The
   // detection logic lives there, not here. Degrades to "unknown / not motor"
   // when there is no state for the window.
   async function analyzeTripEngine (startMs, stopMs) {

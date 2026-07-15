@@ -1,6 +1,6 @@
 /*
  * Engine-on for a trip, read from a propulsion.*.state history published by the
- * signalk-engine-state plugin (live and backfilled). The detection logic lives
+ * signalk-derived-engine-state plugin (live and backfilled). The detection logic lives
  * there; this only interprets the resulting step function. There is no local
  * re-derivation from alternator/current anymore, so the logic exists in one place.
  */

@@ -53,7 +53,7 @@ your trips and produces a ready-to-paste logbook entry for each one.
 - **A `propulsion.<n>.state` provider** (`started` / `stopped`) for the
   motoring/sailing distinction. The logbook reads this path from InfluxDB; it has
   no built-in engine detection. Any of these works:
-  - [`signalk-engine-state`](https://www.npmjs.com/package/signalk-engine-state)
+  - [`signalk-derived-engine-state`](https://www.npmjs.com/package/signalk-derived-engine-state)
     — companion plugin; infers engine state from alternator temperature, charge
     current and wind-vs-speed, and also backfills history. **Recommended.**
   - [`signalk-alternator-engine-on`](https://www.npmjs.com/package/signalk-alternator-engine-on)

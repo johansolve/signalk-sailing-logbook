@@ -34,7 +34,7 @@
   },
   "comment": "recommends: install one of these to provide propulsion.<n>.state for the motoring/sailing distinction",
   "recommends": [
-    "signalk-engine-state",
+    "signalk-derived-engine-state",
     "signalk-alternator-engine-on"
   ]
 }

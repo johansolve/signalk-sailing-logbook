@@ -190,7 +190,7 @@ function makeInflux (config) {
       return res.values.map((v) => [v[0], v[1]]).filter((p) => p[1] != null)
     },
 
-    // Propulsion state history published by signalk-engine-state, bracketed to
+    // Propulsion state history published by signalk-derived-engine-state, bracketed to
     // the trip window as [[startMs, state], ...transitions..., [stopMs, state]].
     //
     // State is a step function that only changes on transitions, so the raw
