@@ -43,9 +43,15 @@ body {
   display: flex;
   align-items: baseline;
   gap: 1rem;
+  /* Same container as <main> so the title lines up with the content and the bar
+     is never wider than it. */
+  max-width: 960px;
+  margin: 0 auto;
   padding: 0.9rem 1.25rem;
   background: var(--panel);
-  border-bottom: 1px solid var(--line);
+  border: 1px solid var(--line);
+  border-radius: 0 0 8px 8px;
+  border-top: none;
   position: sticky;
   top: 0;
   z-index: 5;
@@ -210,6 +216,9 @@ button.danger {
   align-items: flex-end;
   margin-bottom: 1.25rem;
 }
+.place-hint {
+  margin: -0.75rem 0 1.25rem;
+}
 label {
   display: flex;
   flex-direction: column;
@@ -226,15 +235,74 @@ input {
   color: var(--ink);
 }
 
-.detail-cols {
-  display: grid;
-  grid-template-columns: 2fr 1fr;
-  gap: 1.5rem;
+/* track map */
+.trackmap {
+  height: 340px;
+  margin-bottom: 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  /* Water-ish backdrop so an offline map (no tiles) still frames the track. */
+  background: #aad3df;
+  box-shadow: var(--shadow);
+  z-index: 0;
 }
-@media (max-width: 700px) {
-  .detail-cols {
-    grid-template-columns: 1fr;
+@media (prefers-color-scheme: dark) {
+  .trackmap {
+    background: #0d2b38;
   }
+}
+.track-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  box-shadow: var(--shadow);
+}
+.track-legend .tl-bar {
+  display: inline-block;
+  width: 90px;
+  height: 8px;
+  border-radius: 4px;
+}
+.track-legend .tl-label {
+  font-variant-numeric: tabular-nums;
+}
+/* click-to-inspect snapshot popup */
+.snap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-variant-numeric: tabular-nums;
+}
+.snap strong {
+  font-size: 0.95rem;
+}
+/* theme the Leaflet popup so it matches the panel in dark mode too */
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+.leaflet-popup-content {
+  margin: 0.5rem 0.75rem;
+}
+.leaflet-container a.leaflet-popup-close-button {
+  color: var(--muted);
+}
+
+.events {
+  margin-top: 1.5rem;
+}
+/* the maneuver summary is the section's only heading — understated on purpose */
+.ev-summary {
+  font-weight: 500;
+  color: var(--muted);
 }
 h3 {
   font-size: 0.95rem;
@@ -260,6 +328,11 @@ h3 {
   color: var(--muted);
   font-size: 0.78em;
 }
+/* Motor badge replacing TWA/AWA for an hour spent under engine; the pill itself
+   is the shared .tag style, same as the trip list. */
+.motor-cell {
+  text-align: center;
+}
 .unit-note {
   font-size: 0.78rem;
   color: var(--muted);
@@ -278,6 +351,12 @@ h3 {
   padding: 0.28rem 0;
   border-bottom: 1px solid var(--line);
   font-size: 0.9rem;
+}
+.ev-item {
+  cursor: pointer;
+}
+.ev-item:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 .ev-del {
   margin-left: auto;

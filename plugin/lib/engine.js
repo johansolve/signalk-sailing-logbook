@@ -38,7 +38,27 @@ function fromStateSeries (series) {
     return isOn(cur)
   }
 
-  return { share, onAt, samples: s.length }
+  // On-fraction over an arbitrary [fromMs, toMs] sub-window, integrating the same
+  // step function. Used to mark individual hours as motoring. Returns null for a
+  // non-positive window.
+  const fraction = (fromMs, toMs) => {
+    if (!(toMs > fromMs)) {
+      return null
+    }
+    let onMs = 0
+    for (let i = 0; i < s.length; i++) {
+      const segStart = s[i][0]
+      const segEnd = i + 1 < s.length ? s[i + 1][0] : Infinity
+      const lo = Math.max(segStart, fromMs)
+      const hi = Math.min(segEnd, toMs)
+      if (hi > lo && isOn(s[i][1])) {
+        onMs += hi - lo
+      }
+    }
+    return onMs / (toMs - fromMs)
+  }
+
+  return { share, onAt, fraction, samples: s.length }
 }
 
 module.exports = { fromStateSeries }

@@ -47,6 +47,25 @@ describe('db', function () {
     db.close()
   })
 
+  it('stores, renames and deletes named places', function () {
+    const db = freshDb()
+    const id = db.insertPlace({ name: 'Grötvik', lat: 56.641, lon: 12.7802 })
+    assert.deepEqual(db.listPlaces().map((p) => p.name), ['Grötvik'])
+    db.updatePlaceName(id, 'Hemmahamn')
+    assert.equal(db.listPlaces()[0].name, 'Hemmahamn')
+    db.deletePlace(id)
+    assert.equal(db.listPlaces().length, 0)
+    db.close()
+  })
+
+  it('tracks the one-time seed guard via user_version', function () {
+    const db = freshDb()
+    assert.equal(db.userVersion(), 0)
+    db.setUserVersion(1)
+    assert.equal(db.userVersion(), 1)
+    db.close()
+  })
+
   it('reopening an existing database keeps its data (migration is idempotent)', function () {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'logbook-'))
     const file = path.join(dir, 'test.sqlite')

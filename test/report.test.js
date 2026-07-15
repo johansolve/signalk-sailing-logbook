@@ -46,4 +46,26 @@ describe('buildReport', function () {
     assert.match(line, /TWD/)
     assert.doesNotMatch(line, /±/)
   })
+
+  it('a motoring hour shows a Motor badge instead of TWA/AWA', function () {
+    const hourly = [{
+      time: T, motor: true,
+      tws: { mean: 5, p10: 4, p90: 6 }, stw: {}, twd: {},
+      twa: { mean: 0.8, p10: 0.7, p90: 0.9, side: 1 },
+      awa: { mean: 0.7, p10: 0.6, p90: 0.8, side: 1 }, heel: {}
+    }]
+    const line = buildReport(trip, [], hourly, 'en', false).split('\n').find((l) => /^\d\d:/.test(l))
+    assert.match(line, /Motor/)
+    assert.doesNotMatch(line, /TWA/)
+    assert.doesNotMatch(line, /AWA/)
+  })
+
+  it('reports motoring time and percent when the engine ran', function () {
+    const mixed = Object.assign({}, trip, { engine_share: 0.25 })
+    const out = buildReport(mixed, [], [], 'en', false)
+    assert.match(out, /engine/)
+    assert.match(out, /25%/)
+    // a zero-engine trip says nothing about motoring
+    assert.doesNotMatch(buildReport(trip, [], [], 'en', false), /engine \d/)
+  })
 })

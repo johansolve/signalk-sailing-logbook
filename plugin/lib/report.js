@@ -30,6 +30,7 @@ const STR = {
     log: 'LOG', unknown: 'unknown', tack: 'tack', gybe: 'gybe',
     hourlyIntro: 'Hourly weather, mean (p10–p90); TWA/AWA with dominant side S/P; TWD mean (±deviation):',
     heel: 'Heel', stbd: 'S', port: 'P', locale: 'en-GB', unitH: 'h', unitMin: 'min',
+    motorBadge: 'Motor', engineLabel: 'engine', pct: (v) => `${v}%`,
     and: ' and ', noManeuvers: 'No tacks or gybes',
     tacksN: (n) => `${NUM.en(n)} ${n === 1 ? 'tack' : 'tacks'}`,
     gybesN: (n) => `${NUM.en(n)} ${n === 1 ? 'gybe' : 'gybes'}`,
@@ -45,6 +46,7 @@ const STR = {
     log: 'LOGG', unknown: 'okänd', tack: 'slag', gybe: 'gipp',
     hourlyIntro: 'Timväder, medel (p10–p90); TWA/AWA med dominerande sida SB/BB; TWD medel (±avvikelse):',
     heel: 'Kräng', stbd: 'SB', port: 'BB', locale: 'sv-SE', unitH: 'h', unitMin: 'min',
+    motorBadge: 'Motor', engineLabel: 'motor', pct: (v) => `${v} %`,
     and: ' och ', noManeuvers: 'Inga slag eller gippar',
     tacksN: (n) => `${NUM.sv(n, 'ett')} slag`,
     gybesN: (n) => `${NUM.sv(n, 'en')} ${n === 1 ? 'gipp' : 'gippar'}`,
@@ -212,6 +214,14 @@ function buildReport (trip, events, hourly, lang, motor) {
   const maxFrag = trip.max_sog != null ? `, max ${fmt(toKnots(trip.max_sog), 1)} kn` : ''
   const dur = duration(trip.start_time, trip.stop_time)
 
+  // Motoring time out of the total, shown for any trip that ran the engine at
+  // all (not just fully-motoring ones), so a mostly-sailing trip still reports it.
+  let motorFrag = ''
+  if (trip.engine_share != null && trip.engine_share > 0.005 && trip.start_time != null && trip.stop_time != null) {
+    const motorMs = (trip.stop_time - trip.start_time) * trip.engine_share
+    motorFrag = `, ${s.engineLabel} ${duration(trip.start_time, trip.start_time + motorMs)} (${s.pct(fmt(trip.engine_share * 100))})`
+  }
+
   // Maneuver phrase with the times folded in, e.g. "one gybe (18:40)" or
   // "three tacks (10:12, 10:45, 11:30) and one gybe (14:05)".
   const tackTimes = events.filter((e) => e.type === 'tack').map((e) => clock(e.time))
@@ -234,12 +244,12 @@ function buildReport (trip, events, hourly, lang, motor) {
   if (lang === 'sv') {
     lines.push(
       `${motor ? 'Motortur' : 'Segling'} ${dateStr(trip.start_time)}. Avgång ${sp}, ankomst ${ep}. ` +
-      `Restid ${dur}${distFrag}${maxFrag}.${tail}`
+      `Restid ${dur}${distFrag}${maxFrag}${motorFrag}.${tail}`
     )
   } else {
     lines.push(
       `${motor ? 'Motoring' : 'Passage'} ${dateStr(trip.start_time)}. Departed ${sp}, arrived ${ep}. ` +
-      `${dur}${distFrag}${maxFrag}.${tail}`
+      `${dur}${distFrag}${maxFrag}${motorFrag}.${tail}`
     )
   }
 
@@ -268,16 +278,18 @@ function buildReport (trip, events, hourly, lang, motor) {
       const heel = h.heel || {}
       // Only render fields that actually have data for the hour, so a partial
       // hour doesn't fill the line with dashes.
+      // Under engine the pointing angles are meaningless, so a single Motor badge
+      // replaces both TWA and AWA for the hour.
       const parts = [
-        tws.mean != null ? spd('TWS', tws.mean, tws.p10, tws.p90, 'm/s') : null,
         stw.mean != null ? spd('STW', toKnots(stw.mean), toKnots(stw.p10), toKnots(stw.p90), 'kn') : null,
+        tws.mean != null ? spd('TWS', tws.mean, tws.p10, tws.p90, 'm/s') : null,
         twd.mean != null
           ? (twd.std != null
               ? `TWD ${fmt(toDeg(twd.mean))}° (±${fmt(toDeg(twd.std))})`
               : `TWD ${fmt(toDeg(twd.mean))}°`)
           : null,
-        twa.mean != null ? ang('TWA', twa) : null,
-        awa.mean != null ? ang('AWA', awa) : null,
+        h.motor ? s.motorBadge : (twa.mean != null ? ang('TWA', twa) : null),
+        h.motor ? null : (awa.mean != null ? ang('AWA', awa) : null),
         heel.mean != null ? ang(s.heel, heel) : null
       ].filter(Boolean)
       if (parts.length) {

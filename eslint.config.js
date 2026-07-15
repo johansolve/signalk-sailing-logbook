@@ -4,6 +4,8 @@ const js = require('@eslint/js')
 const globals = require('globals')
 
 module.exports = [
+  // Vendored third-party bundle (Leaflet); not ours to lint.
+  { ignores: ['public/vendor/**'] },
   js.configs.recommended,
   {
     languageOptions: {
@@ -18,7 +20,7 @@ module.exports = [
   },
   {
     files: ['public/**/*.js'],
-    languageOptions: { sourceType: 'script', globals: { ...globals.browser } }
+    languageOptions: { sourceType: 'script', globals: { ...globals.browser, L: 'readonly' } }
   },
   {
     files: ['test/**/*.js'],

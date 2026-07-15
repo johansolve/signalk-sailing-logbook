@@ -1,19 +1,23 @@
-# signalk-sailing-logbook
+# Sailing Logbook
 
-Automatic sailing logbook for [Signal K](https://signalk.org/). It detects trips
-from boat speed, marks tacks and gybes, and reports hourly wind and heel
-statistics computed on demand from the onboard InfluxDB. A built-in web app lists
-your trips and produces a ready-to-paste logbook entry for each one.
+Just another Automatic Logbook for [Signal K](https://signalk.org/), this one is
+focused on sailing performance.
 
-![The web app: trip list and a trip detail with hourly weather](docs/screenshot.gif)
+It detects trips from boat speed, marks tacks and gybes, and reports hourly wind
+and heel statistics computed on demand from the onboard InfluxDB. A built-in web
+app lists your trips and produces a ready-to-paste logbook entry for each one.
+
+![The web app: a trip detail with hourly weather, motoring hours and maneuvers](docs/screenshot.png)
 
 ## Features
 
 - **Automatic trip detection** from `navigation.speedOverGround` with configurable
   speed thresholds and minimum durations (hysteresis, so brief speed spikes don't
   start a trip and a plugin restart doesn't end one).
-- **Tack / gybe detection** from `environment.wind.angleTrueWater`, robust to
-  real-world noise:
+- **Tack / gybe detection** from `environment.wind.angleTrueWater` (falling back
+  to `environment.wind.angleApparent` for a retrospective scan when the
+  true-wind derivation logged nothing for that stretch), robust to real-world
+  noise:
   - counts a maneuver only if the new tack is held long enough (rejects false
     tacks while hoisting or dropping sails),
   - a dead-run deadband ignores the wind-angle flutter near a dead run,
@@ -32,6 +36,12 @@ your trips and produces a ready-to-paste logbook entry for each one.
   under engine and to flag motoring trips (their report omits tacks/gybes and the
   point-of-sail wording). The engine state comes from a separate provider — this
   plugin does no engine detection of its own (see Requirements).
+- **Track map** for each trip: the route drawn from the InfluxDB position
+  history, coloured by boat speed, with tacks/gybes and the start/end marked, on
+  an OpenStreetMap base with the OpenSeaMap seamark overlay. Click anywhere on
+  the track for a popup of that moment's conditions (SOG/STW, TWS/TWD, TWA/AWA,
+  heel). The map tiles need the network; offline, the speed-coloured track still
+  shows on a blank canvas.
 - **Place names** via OpenStreetMap Nominatim (best-effort, always editable).
 - **Retrospective scan**: reconstruct past trips from InfluxDB history for any
   date range, using the exact same detection logic as live.
@@ -108,6 +118,7 @@ Read (honour readonly access), under `/signalk/v1/api/sailing-logbook`:
 
 - `GET /trips` — list trips with tack/gybe counts
 - `GET /trips/:id` — trip detail with hourly statistics
+- `GET /trips/:id/track` — downsampled position+SOG track for the map
 - `GET /trips/:id/report?lang=en|sv` — plain-text logbook entry
 
 Admin only, under `/plugins/signalk-sailing-logbook`:

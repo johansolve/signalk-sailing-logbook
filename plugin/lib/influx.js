@@ -300,6 +300,62 @@ function makeInflux (config) {
           `GROUP BY time(${stepSec || 5}s) fill(none)`
       )
       return res.values.map((v) => [v[0], v[1]]).filter((p) => p[1] != null)
+    },
+
+    // Downsampled AWA series (rad), same grid as twaSeries. Used as the fallback
+    // angle for retrospective maneuver detection when the true-wind derivation
+    // logged no angleTrueWater for a stretch (apparent wind is the raw sensor
+    // value and also flips side on a tack/gybe).
+    async awaSeries (startMs, stopMs, stepSec) {
+      const m = quoteMeasurement(paths.awa)
+      const [res] = await run(
+        `SELECT mean("value") AS v FROM "${m}" ` +
+          `WHERE ${window(startMs, stopMs)} ` +
+          `GROUP BY time(${stepSec || 5}s) fill(none)`
+      )
+      return res.values.map((v) => [v[0], v[1]]).filter((p) => p[1] != null)
+    },
+
+    // Downsampled track for the map plot: position joined with a set of scalar
+    // paths (SOG for the speed colouring, plus the same weather fields as the
+    // hourly table) on one shared time grid, so each point carries the moment's
+    // conditions for a click-to-inspect popup. Every query GROUPs BY the same
+    // time(step), so bucket timestamps line up and each join is an exact key
+    // match; a field whose bucket is empty for a point becomes null.
+    // Returns [{ t, lat, lon, sog, stw, tws, twd, twa, awa, heel }, ...].
+    async trackSeries (startMs, stopMs, stepSec) {
+      const step = stepSec || 15
+      const w = window(startMs, stopMs)
+      const pm = quoteMeasurement(paths.position)
+      const fields = [
+        ['sog', paths.sog], ['stw', paths.stw], ['tws', paths.tws],
+        ['twd', paths.twd], ['twa', paths.twa], ['awa', paths.awa], ['heel', paths.heel]
+      ]
+      const results = await run([
+        `SELECT mean("lat") AS lat, mean("lon") AS lon FROM "${pm}" ` +
+          `WHERE ${w} GROUP BY time(${step}s) fill(none)`,
+        ...fields.map(([, path]) =>
+          `SELECT mean("value") AS v FROM "${quoteMeasurement(path)}" ` +
+          `WHERE ${w} GROUP BY time(${step}s) fill(none)`)
+      ])
+      const maps = fields.map((_, i) => {
+        const mp = new Map()
+        for (const row of results[i + 1].values) {
+          if (row[1] != null) {
+            mp.set(row[0], row[1])
+          }
+        }
+        return mp
+      })
+      return results[0].values
+        .filter((r) => r[1] != null && r[2] != null)
+        .map((r) => {
+          const point = { t: r[0], lat: r[1], lon: r[2] }
+          fields.forEach(([key], i) => {
+            point[key] = maps[i].has(r[0]) ? maps[i].get(r[0]) : null
+          })
+          return point
+        })
     }
   }
 }

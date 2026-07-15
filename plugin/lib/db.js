@@ -45,6 +45,16 @@ CREATE TABLE IF NOT EXISTS events (
   lon        REAL
 );
 CREATE INDEX IF NOT EXISTS idx_events_trip ON events(trip_id);
+
+-- Named places: a user-given name anchored at a position. A trip's start/stop
+-- shows the nearest place within a radius (see index.js), so naming a spot once
+-- applies to every trip that starts or ends near it, past and future.
+CREATE TABLE IF NOT EXISTS places (
+  id   INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  lat  REAL NOT NULL,
+  lon  REAL NOT NULL
+);
 `
 
 function open (filePath) {
@@ -88,10 +98,10 @@ function open (filePath) {
                         stop_place  = COALESCE(@stop_place, stop_place)
         WHERE id = @id`
     ),
-    setManualPlace: db.prepare(
-      'UPDATE trips SET start_place_manual = @start_place_manual, ' +
-      'stop_place_manual = @stop_place_manual WHERE id = @id'
-    ),
+    allPlaces: db.prepare('SELECT * FROM places'),
+    insertPlace: db.prepare('INSERT INTO places (name, lat, lon) VALUES (@name, @lat, @lon)'),
+    updatePlaceName: db.prepare('UPDATE places SET name = @name WHERE id = @id'),
+    deletePlaceById: db.prepare('DELETE FROM places WHERE id = ?'),
     insertEvent: db.prepare(
       `INSERT INTO events (trip_id, time, type, twa_before, twa_after, lat, lon)
        VALUES (@trip_id, @time, @type, @twa_before, @twa_after, @lat, @lon)`
@@ -166,12 +176,31 @@ function open (filePath) {
       })
     },
 
-    setManualPlace (id, { startPlace, stopPlace }) {
-      stmts.setManualPlace.run({
-        id,
-        start_place_manual: startPlace != null ? startPlace : null,
-        stop_place_manual: stopPlace != null ? stopPlace : null
-      })
+    listPlaces () {
+      return stmts.allPlaces.all()
+    },
+
+    insertPlace ({ name, lat, lon }) {
+      return stmts.insertPlace.run({ name, lat, lon }).lastInsertRowid
+    },
+
+    updatePlaceName (id, name) {
+      stmts.updatePlaceName.run({ id, name })
+    },
+
+    deletePlace (id) {
+      stmts.deletePlaceById.run(id)
+    },
+
+    // One-time migration guard via SQLite's user_version, used to seed the places
+    // table from pre-existing manual place names exactly once.
+    userVersion () {
+      return this.raw.prepare('PRAGMA user_version').get().user_version
+    },
+
+    setUserVersion (n) {
+      // PRAGMA doesn't take a bound parameter; n is an integer we control.
+      this.raw.exec(`PRAGMA user_version = ${Math.trunc(n)}`)
     },
 
     addEvent (e) {

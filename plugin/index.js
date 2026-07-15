@@ -32,6 +32,8 @@ module.exports = function (app) {
   let currentTripId = null
   let lastPosition = null // { lat, lon }
   let lastSTW = null // most recent speed through water (m/s), for the maneuver gate
+  let liveEngineState = null // last propulsion.<n>.state value we've seen
+  let liveEngineOnSince = null // ms when it last changed to 'started', for the gate
   let geocodeEnabled = true
 
   plugin.id = 'signalk-sailing-logbook'
@@ -98,6 +100,12 @@ module.exports = function (app) {
         title: 'Use alternator temperature and charge current to detect engine-on periods (ignore maneuvers made under engine, flag motoring trips)',
         default: true
       },
+      engineStatePath: {
+        type: 'string',
+        title: 'Propulsion state path from an engine-state provider (read live and from InfluxDB)',
+        description: 'Published by signalk-derived-engine-state or a similar plugin. Used to drop maneuvers made under engine, both live and at completion.',
+        default: 'propulsion.0.state'
+      },
       motorTripPercent: {
         type: 'number',
         title: 'Flag a trip as motoring when at least this percent of it was under engine',
@@ -107,6 +115,12 @@ module.exports = function (app) {
         type: 'boolean',
         title: 'Look up place names via OpenStreetMap Nominatim',
         default: true
+      },
+      placeRadiusMeters: {
+        type: 'number',
+        title: 'Reuse a named place for any trip starting/ending within this radius (m)',
+        description: 'Naming a place in the webapp applies it to every trip, past and future, whose start or stop is within this distance of it.',
+        default: 250
       },
       influxHost: { type: 'string', title: 'InfluxDB host', default: 'localhost' },
       influxPort: { type: 'number', title: 'InfluxDB port', default: 8086 },
@@ -217,6 +231,51 @@ module.exports = function (app) {
     geocodeTrip(tripId, 'stop', stopPos.lat, stopPos.lon)
   }
 
+  // Track the propulsion.<n>.state published by an engine-state provider. We keep
+  // our own "on since" moment, updated only when the value actually changes, so we
+  // never depend on how the provider paces its deltas: a provider that re-emits
+  // "started" every sample and one that emits only on a transition both yield the
+  // same on-since here (we ignore repeats of the current value). Feed uses server
+  // receive time (Date.now()), the same clock the maneuver detector runs on.
+  function onEngineState (value, now) {
+    if (value === liveEngineState) {
+      return
+    }
+    liveEngineState = value
+    if (value === 'started') {
+      liveEngineOnSince = now
+    }
+  }
+
+  // Seed the live engine state at start from whatever the data model already holds,
+  // so a plugin restart mid-motoring suppresses right away instead of waiting for
+  // the next transition. Best-effort: use the retained value's timestamp as the
+  // on-since, falling back to 0 ("on since before this trip") when it's missing.
+  function seedEngineState () {
+    const p = app.getSelfPath(options.engineStatePath || 'propulsion.0.state')
+    if (!p || p.value == null) {
+      return
+    }
+    liveEngineState = p.value
+    if (p.value === 'started') {
+      const ts = p.timestamp ? Date.parse(p.timestamp) : NaN
+      liveEngineOnSince = Number.isFinite(ts) ? ts : 0
+    }
+  }
+
+  // Was the engine running at time t? We compare against t (the maneuver's own
+  // moment), not "now": a maneuver is only confirmed after a hold (default 90 s),
+  // by which time the engine may have been started for the motoring leg that
+  // follows. A tack made just before the engine started (onSince > t) is therefore
+  // not treated as under engine and survives. Unknown/absent state means don't
+  // suppress; completion still reconciles genuine motoring against InfluxDB.
+  function engineOnAt (t) {
+    if (options.engineAware === false) {
+      return false
+    }
+    return liveEngineState === 'started' && liveEngineOnSince != null && liveEngineOnSince <= t
+  }
+
   function edgeMarginMs () {
     return (options.maneuverEdgeMarginMinutes != null ? options.maneuverEdgeMarginMinutes : 5) * 60000
   }
@@ -256,6 +315,129 @@ module.exports = function (app) {
     return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)))
   }
 
+  // ---- named places --------------------------------------------------------
+  // A user-given name anchored at a position, reused for every trip that starts
+  // or ends within placeRadiusMeters of it (past and future). The registry lives
+  // in SQLite; matching is a small in-memory scan since there are only a handful.
+
+  function placeRadiusM () {
+    return options.placeRadiusMeters != null ? options.placeRadiusMeters : 250
+  }
+
+  // Nearest named place within the radius of a position, or null.
+  function nearestPlace (lat, lon) {
+    if (lat == null || lon == null || !db) {
+      return null
+    }
+    const r = placeRadiusM()
+    let best = null
+    let bd = Infinity
+    for (const p of db.listPlaces()) {
+      const d = haversine(lat, lon, p.lat, p.lon)
+      if (d <= r && d < bd) {
+        bd = d
+        best = p
+      }
+    }
+    return best
+  }
+
+  function resolvePlaceName (lat, lon) {
+    const p = nearestPlace(lat, lon)
+    return p ? p.name : null
+  }
+
+  // Set a name at a position: rename the nearest place within the radius, or add
+  // a new one anchored here if there is none.
+  function upsertPlaceAt (lat, lon, name) {
+    if (lat == null || lon == null) {
+      return
+    }
+    const near = nearestPlace(lat, lon)
+    if (near) {
+      db.updatePlaceName(near.id, name)
+    } else {
+      db.insertPlace({ name, lat, lon })
+    }
+  }
+
+  // Clear the name at a position by removing the nearest place within the radius,
+  // reverting every trip near it to its geocoded name.
+  function deletePlaceAt (lat, lon) {
+    const near = nearestPlace(lat, lon)
+    if (near) {
+      db.deletePlace(near.id)
+    }
+  }
+
+  // Apply one edited side (start or stop) from the form. `geo` is the geocoded
+  // name, `submitted` the field value. Saving only ever creates or renames: it
+  // never deletes, so re-saving an unchanged form (which always sends both sides)
+  // can't remove a shared place, and an emptied field is a no-op. Deletion is an
+  // explicit action (see the DELETE route). We also skip when the submitted value
+  // equals what the field already shows, so leaving a geocoded name untouched
+  // doesn't pin it into the registry.
+  function applyPlaceEdit (lat, lon, geo, submitted) {
+    if (lat == null || lon == null) {
+      return
+    }
+    const name = typeof submitted === 'string' && submitted.trim() ? submitted.trim() : null
+    if (name == null) {
+      return
+    }
+    const current = resolvePlaceName(lat, lon)
+    const effective = current != null ? current : (geo || null)
+    if (name === effective) {
+      return
+    }
+    upsertPlaceAt(lat, lon, name)
+  }
+
+  // Overlay the resolved place names onto a trip row for display. The registry is
+  // the single source for manual names, so we set the *_place_manual fields from
+  // it (null when unnamed), and the geocoded *_place stays as the fallback. When a
+  // point has no coordinates (registry can't anchor it) we keep whatever manual
+  // name the row already carried, so a coordless legacy name isn't lost.
+  //
+  // same_place flags a round trip whose start and stop fall within the radius:
+  // they are one place by definition, so the webapp shows a single name field for
+  // them instead of two that could disagree.
+  function withPlaces (trip) {
+    if (!trip) {
+      return trip
+    }
+    const startName = resolvePlaceName(trip.start_lat, trip.start_lon)
+    const stopName = resolvePlaceName(trip.stop_lat, trip.stop_lon)
+    const samePlace =
+      trip.start_lat != null && trip.stop_lat != null &&
+      haversine(trip.start_lat, trip.start_lon, trip.stop_lat, trip.stop_lon) <= placeRadiusM()
+    return Object.assign({}, trip, {
+      start_place_manual: startName != null ? startName : (trip.start_lat == null ? trip.start_place_manual : null),
+      stop_place_manual: stopName != null ? stopName : (trip.stop_lat == null ? trip.stop_place_manual : null),
+      same_place: samePlace
+    })
+  }
+
+  // One-time seed: turn the manual names that predate the registry into places,
+  // so existing trips keep their names and share them. Guarded by user_version so
+  // it runs once and never resurrects a place the user later deletes.
+  function seedPlacesOnce () {
+    if (db.userVersion() >= 1) {
+      return
+    }
+    // Oldest first, so when two manual names fall within one radius (the same
+    // place by our model) the most recent naming wins the merge.
+    db.listTrips().slice().reverse().forEach((t) => {
+      if (t.start_place_manual) {
+        upsertPlaceAt(t.start_lat, t.start_lon, t.start_place_manual)
+      }
+      if (t.stop_place_manual) {
+        upsertPlaceAt(t.stop_lat, t.stop_lon, t.stop_place_manual)
+      }
+    })
+    db.setUserVersion(1)
+  }
+
   // A maneuver is an "edge" maneuver (harbour departure/arrival, to be ignored)
   // if it is close in time OR in distance to the trip start or end. The end
   // checks are null-safe so this also works on a still-active trip (start only).
@@ -288,6 +470,13 @@ module.exports = function (app) {
     // Drop maneuvers near the trip start (harbour departure). The end edge is
     // enforced when the trip completes, since the end is not known yet.
     if (trip && isEdgeManeuver(trip, m.time, pos.lat, pos.lon)) {
+      return
+    }
+    // Drop maneuvers made under engine as they happen, so the live log isn't
+    // filled with motoring turns during the trip (previously only cleaned up at
+    // completion). Completion still reconciles against the recorded state.
+    if (engineOnAt(m.time)) {
+      app.debug(`maneuver at ${new Date(m.time).toISOString()} ignored: engine on`)
       return
     }
     db.addEvent({
@@ -372,7 +561,16 @@ module.exports = function (app) {
     // history on the same grid, by proximity (time and distance) to the ends,
     // and by whether the engine was running.
     try {
-      const twa = await influx.twaSeries(startMs, stopMs, 5)
+      // Prefer true wind angle; fall back to apparent when the true-wind
+      // derivation logged nothing for this stretch (e.g. a multi-day gap). AWA
+      // also flips side on a tack/gybe, so sign-crossing detection still works,
+      // just a bit coarser.
+      let angles = await influx.twaSeries(startMs, stopMs, 5)
+      let angleSource = 'twa'
+      if (!angles.length) {
+        angles = await influx.awaSeries(startMs, stopMs, 5)
+        angleSource = 'awa'
+      }
       const stw = await influx.stwSeries(startMs, stopMs, 5)
       const positions = await influx.positionSeries(startMs, stopMs, 15)
       const stwAt = new Map(stw)
@@ -397,7 +595,7 @@ module.exports = function (app) {
         return best || {}
       }
       const md = createManeuverDetector(detectorOpts())
-      twa.forEach(([t, angle]) => {
+      angles.forEach(([t, angle]) => {
         md.feed(t, angle, stwAt.has(t) ? stwAt.get(t) : null, (m) => {
           const pos = nearestPos(m.time)
           if (isEdgeManeuver(retroTrip, m.time, pos.lat, pos.lon) || engine.onAt(m.time)) {
@@ -414,6 +612,9 @@ module.exports = function (app) {
           })
         })
       })
+      if (angleSource === 'awa') {
+        app.debug(`retro trip ${tripId}: no TWA in window, used AWA fallback for maneuvers`)
+      }
     } catch (e) {
       app.error(`retro maneuvers failed: ${e.message}`)
     }
@@ -451,8 +652,10 @@ module.exports = function (app) {
         maneuverEdgeMarginMinutes: 5,
         maneuverEdgeRadiusMeters: 200,
         engineAware: true,
+        engineStatePath: 'propulsion.0.state',
         motorTripPercent: 85,
         geocode: true,
+        placeRadiusMeters: 250,
         influxHost: 'localhost',
         influxPort: 8086,
         database: 'libelle',
@@ -464,12 +667,15 @@ module.exports = function (app) {
     geocodeEnabled = options.geocode !== false
 
     db = dbLib.open(options.dbPath)
+    // Migrate pre-registry manual place names into the shared places table once.
+    seedPlacesOnce()
     influx = influxLib.makeInflux({
       host: options.influxHost,
       port: options.influxPort,
       database: options.database,
       username: options.username,
-      password: options.password
+      password: options.password,
+      paths: { engineState: options.engineStatePath || 'propulsion.0.state' }
     })
 
     // Resume an open trip left behind by a restart.
@@ -480,7 +686,9 @@ module.exports = function (app) {
       Object.assign(detectorOpts(), { initialMoving: !!active })
     )
     maneuverDetector = createManeuverDetector(detectorOpts())
+    seedEngineState()
 
+    const engineStatePath = options.engineStatePath || 'propulsion.0.state'
     app.subscriptionmanager.subscribe(
       {
         context: 'vessels.self',
@@ -488,7 +696,8 @@ module.exports = function (app) {
           { path: 'navigation.speedOverGround', period: 1000 },
           { path: 'navigation.speedThroughWater', period: 1000 },
           { path: 'environment.wind.angleTrueWater', period: 1000 },
-          { path: 'navigation.position', period: 5000 }
+          { path: 'navigation.position', period: 5000 },
+          { path: engineStatePath, period: 1000 }
         ]
       },
       unsubscribes,
@@ -505,6 +714,8 @@ module.exports = function (app) {
               maneuverDetector.feed(now, v.value, lastSTW, onManeuver)
             } else if (v.path === 'navigation.position' && v.value && typeof v.value.latitude === 'number') {
               lastPosition = { lat: v.value.latitude, lon: v.value.longitude }
+            } else if (v.path === engineStatePath) {
+              onEngineState(v.value, now)
             }
           })
         })
@@ -536,6 +747,8 @@ module.exports = function (app) {
     // position or speed before fresh deltas arrive.
     lastPosition = null
     lastSTW = null
+    liveEngineState = null
+    liveEngineOnSince = null
   }
 
   // ---- HTTP: read via signalKApiRoutes, writes/scan via registerWithRouter --
@@ -546,7 +759,7 @@ module.exports = function (app) {
       return null
     }
     const events = db.getEvents(id)
-    return { trip, events }
+    return { trip: withPlaces(trip), events }
   }
 
   async function detailWithStats (id) {
@@ -558,11 +771,34 @@ module.exports = function (app) {
     if (base.trip.stop_time) {
       try {
         hourly = await influx.hourlyStats(base.trip.start_time, base.trip.stop_time)
+        await annotateHourlyEngine(hourly, base.trip.start_time, base.trip.stop_time)
       } catch (e) {
         app.error(`hourlyStats failed: ${e.message}`)
       }
     }
     return { trip: base.trip, events: base.events, hourly }
+  }
+
+  // Mark each hourly bucket that was mostly under engine, so the report and
+  // webapp can show a motor badge instead of pointing angles for that hour.
+  async function annotateHourlyEngine (hourly, startMs, stopMs) {
+    if (options.engineAware === false || !hourly || !hourly.length) {
+      return
+    }
+    const eng = fromStateSeries(await influx.engineStateSeries(startMs, stopMs))
+    if (!eng) {
+      return
+    }
+    const HOUR = 3600000
+    hourly.forEach((h) => {
+      const from = Math.max(h.time, startMs)
+      const to = Math.min(h.time + HOUR, stopMs)
+      const frac = eng.fraction(from, to)
+      if (frac != null) {
+        h.engineFraction = frac
+        h.motor = frac >= 0.5
+      }
+    })
   }
 
   // A trip counts as a motoring trip when the engine share meets the threshold.
@@ -584,7 +820,7 @@ module.exports = function (app) {
       return
     }
     const trips = db.listTrips().map((t) =>
-      Object.assign({}, t, db.countEvents(t.id), { motor: motorTrip(t) })
+      Object.assign(withPlaces(t), db.countEvents(t.id), { motor: motorTrip(t) })
     )
     res.json(trips)
   }
@@ -614,6 +850,36 @@ module.exports = function (app) {
       res.status(500).json({ error: e.message })
     }
   }
+  // Downsampled position+SOG track for the map plot. Points are capped by
+  // choosing a time step from the trip length, so a long passage stays a few
+  // hundred points rather than tens of thousands. Nothing is persisted; the
+  // track is derived from InfluxDB on demand like the hourly stats.
+  async function trackHandler (req, res) {
+    const id = tripIdParam(req)
+    if (id == null) {
+      return res.status(400).json({ error: 'invalid id' })
+    }
+    if (dbGone(res)) {
+      return
+    }
+    const trip = db.getTrip(id)
+    if (!trip) {
+      return res.status(404).json({ error: 'not found' })
+    }
+    const stopMs = trip.stop_time || Date.now()
+    if (!trip.start_time || stopMs <= trip.start_time) {
+      return res.json({ points: [] })
+    }
+    // Aim for ~600 points; never finer than 5 s.
+    const stepSec = Math.max(5, Math.round((stopMs - trip.start_time) / 1000 / 600))
+    try {
+      const points = await influx.trackSeries(trip.start_time, stopMs, stepSec)
+      res.json({ points })
+    } catch (e) {
+      app.error(`track failed: ${e.message}`)
+      res.status(500).json({ error: e.message })
+    }
+  }
   async function reportHandler (req, res) {
     const id = tripIdParam(req)
     if (id == null) {
@@ -640,6 +906,7 @@ module.exports = function (app) {
     router.get('/sailing-logbook/trips', listHandler)
     router.get('/sailing-logbook/trips/:id', detailHandler)
     router.get('/sailing-logbook/trips/:id/report', reportHandler)
+    router.get('/sailing-logbook/trips/:id/track', trackHandler)
     return router
   }
 
@@ -649,10 +916,11 @@ module.exports = function (app) {
     router.get('/trips', listHandler)
     router.get('/trips/:id', detailHandler)
     router.get('/trips/:id/report', reportHandler)
+    router.get('/trips/:id/track', trackHandler)
 
-    // A place is either a non-empty string or null (to clear it).
-    const cleanPlace = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null)
-
+    // Save a place name (create or rename), anchored at the trip's start/stop and
+    // shared with every trip near it. Never deletes; clearing a field is a no-op,
+    // deletion is the explicit DELETE route below.
     router.put('/trips/:id/place', (req, res) => {
       const id = tripIdParam(req)
       if (id == null) {
@@ -668,14 +936,39 @@ module.exports = function (app) {
       if (dbGone(res)) {
         return
       }
-      if (!db.getTrip(id)) {
+      const trip = db.getTrip(id)
+      if (!trip) {
         return res.status(404).json({ error: 'not found' })
       }
-      db.setManualPlace(id, {
-        startPlace: cleanPlace(body.startPlace),
-        stopPlace: cleanPlace(body.stopPlace)
-      })
-      res.json(db.getTrip(id))
+      if (body.startPlace !== undefined) {
+        applyPlaceEdit(trip.start_lat, trip.start_lon, trip.start_place, body.startPlace)
+      }
+      if (body.stopPlace !== undefined) {
+        applyPlaceEdit(trip.stop_lat, trip.stop_lon, trip.stop_place, body.stopPlace)
+      }
+      res.json(withPlaces(db.getTrip(id)))
+    })
+
+    // Explicitly remove the named place at a trip's start or stop, reverting every
+    // trip near it to its geocoded name. :side is 'start' or 'stop'.
+    router.delete('/trips/:id/place/:side', (req, res) => {
+      const id = tripIdParam(req)
+      if (id == null) {
+        return res.status(400).json({ error: 'invalid id' })
+      }
+      const side = req.params.side
+      if (side !== 'start' && side !== 'stop') {
+        return res.status(400).json({ error: 'side must be start or stop' })
+      }
+      if (dbGone(res)) {
+        return
+      }
+      const trip = db.getTrip(id)
+      if (!trip) {
+        return res.status(404).json({ error: 'not found' })
+      }
+      deletePlaceAt(trip[`${side}_lat`], trip[`${side}_lon`])
+      res.json(withPlaces(db.getTrip(id)))
     })
 
     router.delete('/trips/:id', (req, res) => {

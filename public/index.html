@@ -4,7 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Logbook</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="icon" type="image/svg+xml" href="logo.svg">
+  <link rel="stylesheet" href="vendor/leaflet.css">
+  <link rel="stylesheet" href="style.css?v=0.4.3">
 </head>
 <body>
   <header class="topbar">
@@ -51,6 +53,9 @@
     </section>
   </main>
 
-  <script src="app.js"></script>
+  <!-- Bump ?v= together with package.json "version" whenever app.js/style.css
+       change, so browsers fetch the new asset instead of a cached one. -->
+  <script src="vendor/leaflet.js"></script>
+  <script src="app.js?v=0.4.3"></script>
 </body>
 </html>
