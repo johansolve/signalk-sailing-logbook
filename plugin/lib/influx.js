@@ -168,15 +168,23 @@ function makeInflux (config) {
       return Array.from(buckets.values()).sort((x, y) => x.time - y.time)
     },
 
-    // Mean/max SOG over the window; used to estimate distance at completion.
+    // Mean SOG (for the distance estimate at completion) and the peak STW (the
+    // top boat speed through the water, shown in the trip list and detail meta).
+    // The peak is the 99th percentile, not a raw max: the paddle-wheel log emits
+    // occasional absurd spikes (hundreds of knots) that a plain max() would
+    // report, so this trims the outliers the same way the hourly stats do.
     async tripAggregate (startMs, stopMs) {
-      const m = quoteMeasurement(paths.sog)
-      const [res] = await run(
-        `SELECT mean("value") AS mean, max("value") AS max ` +
-          `FROM "${m}" WHERE ${window(startMs, stopMs)}`
-      )
-      const row = rowsToObjects(res)[0] || {}
-      return { meanSog: row.mean != null ? row.mean : null, maxSog: row.max != null ? row.max : null }
+      const w = window(startMs, stopMs)
+      const [sog, stw] = await run([
+        `SELECT mean("value") AS mean FROM "${quoteMeasurement(paths.sog)}" WHERE ${w}`,
+        `SELECT percentile("value",99) AS peak FROM "${quoteMeasurement(paths.stw)}" WHERE ${w}`
+      ])
+      const sogRow = rowsToObjects(sog)[0] || {}
+      const stwRow = rowsToObjects(stw)[0] || {}
+      return {
+        meanSog: sogRow.mean != null ? sogRow.mean : null,
+        maxStw: stwRow.peak != null ? stwRow.peak : null
+      }
     },
 
     // Downsampled SOG series (m/s) for retrospective trip detection.

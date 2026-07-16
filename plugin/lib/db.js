@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS trips (
   stop_place_manual  TEXT,
   distance_nm        REAL,
   max_sog            REAL,
+  max_stw            REAL,
   engine_share       REAL,
   status             TEXT NOT NULL DEFAULT 'active',
   origin             TEXT NOT NULL DEFAULT 'live'
@@ -63,14 +64,16 @@ function open (filePath) {
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
   db.exec(SCHEMA)
-  // Migration for databases created before engine_share existed.
-  try {
-    db.exec('ALTER TABLE trips ADD COLUMN engine_share REAL')
-  } catch (e) {
-    // Expected on an up-to-date DB (the column is already in SCHEMA). Only that
-    // case is benign; anything else (locked, corrupt) must surface, not hide.
-    if (!/duplicate column/i.test(e.message)) {
-      throw e
+  // Migrations for columns added to existing databases. A "duplicate column"
+  // error means the column is already in SCHEMA (fresh DB) and is benign;
+  // anything else (locked, corrupt) must surface, not hide.
+  for (const col of ['engine_share REAL', 'max_stw REAL']) {
+    try {
+      db.exec(`ALTER TABLE trips ADD COLUMN ${col}`)
+    } catch (e) {
+      if (!/duplicate column/i.test(e.message)) {
+        throw e
+      }
     }
   }
 
@@ -82,16 +85,21 @@ function open (filePath) {
     insertCompleteTrip: db.prepare(
       `INSERT INTO trips
          (start_time, stop_time, start_lat, start_lon, stop_lat, stop_lon,
-          distance_nm, max_sog, status, origin)
+          distance_nm, max_stw, status, origin)
        VALUES
          (@start_time, @stop_time, @start_lat, @start_lon, @stop_lat, @stop_lon,
-          @distance_nm, @max_sog, 'complete', @origin)`
+          @distance_nm, @max_stw, 'complete', @origin)`
     ),
     completeTrip: db.prepare(
       `UPDATE trips
           SET stop_time = @stop_time, stop_lat = @stop_lat, stop_lon = @stop_lon,
-              distance_nm = @distance_nm, max_sog = @max_sog, status = 'complete'
+              distance_nm = @distance_nm, max_stw = @max_stw, status = 'complete'
         WHERE id = @id`
+    ),
+    setMaxStw: db.prepare('UPDATE trips SET max_stw = @max_stw WHERE id = @id'),
+    completeTripWindows: db.prepare(
+      "SELECT id, start_time, stop_time FROM trips " +
+        "WHERE status = 'complete' AND stop_time IS NOT NULL"
     ),
     setGeocode: db.prepare(
       `UPDATE trips SET start_place = COALESCE(@start_place, start_place),
@@ -151,7 +159,7 @@ function open (filePath) {
         stop_lat: t.stopLat != null ? t.stopLat : null,
         stop_lon: t.stopLon != null ? t.stopLon : null,
         distance_nm: t.distanceNm != null ? t.distanceNm : null,
-        max_sog: t.maxSog != null ? t.maxSog : null,
+        max_stw: t.maxStw != null ? t.maxStw : null,
         origin: t.origin || 'live'
       })
       return info.lastInsertRowid
@@ -164,8 +172,17 @@ function open (filePath) {
         stop_lat: t.stopLat != null ? t.stopLat : null,
         stop_lon: t.stopLon != null ? t.stopLon : null,
         distance_nm: t.distanceNm != null ? t.distanceNm : null,
-        max_sog: t.maxSog != null ? t.maxSog : null
+        max_stw: t.maxStw != null ? t.maxStw : null
       })
+    },
+
+    // Backfill support: every complete trip's window, for (re)computing max_stw.
+    completeTripWindows () {
+      return stmts.completeTripWindows.all()
+    },
+
+    setMaxStw (id, maxStw) {
+      stmts.setMaxStw.run({ id, max_stw: maxStw != null ? maxStw : null })
     },
 
     setGeocode (id, { startPlace, stopPlace }) {

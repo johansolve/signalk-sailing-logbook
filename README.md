@@ -7,7 +7,7 @@ It detects trips from boat speed, marks tacks and gybes, and reports hourly wind
 and heel statistics computed on demand from the onboard InfluxDB. A built-in web
 app lists your trips and produces a ready-to-paste logbook entry for each one.
 
-![The web app: a trip detail with the speed-coloured track map, hourly weather and the maneuver list](docs/screenshot.png)
+![The web app: a trip detail with the speed-coloured track map, the timeline scrubber and its info panel, hourly weather and the maneuver list](docs/screenshot.png)
 
 ## Features
 
@@ -38,10 +38,13 @@ app lists your trips and produces a ready-to-paste logbook entry for each one.
   plugin does no engine detection of its own (see Requirements).
 - **Track map** for each trip: the route drawn from the InfluxDB position
   history, coloured by boat speed, with tacks/gybes and the start/end marked, on
-  an OpenStreetMap base with the OpenSeaMap seamark overlay. Click anywhere on
-  the track for a popup of that moment's conditions (SOG/STW, TWS/TWD, TWA/AWA,
-  heel). The map tiles need the network; offline, the speed-coloured track still
-  shows on a blank canvas.
+  an OpenStreetMap base with the OpenSeaMap seamark overlay. A timeline slider
+  under the map scrubs through the trip, moving a highlight dot along the track
+  and updating a fixed info panel with that moment's conditions (SOG/STW,
+  TWS/TWD, TWA/AWA, heel, plus an engine badge for the stretches under power);
+  clicking the track or a maneuver jumps the scrubber there. Drag the handle
+  below the map to enlarge it for a closer look. The map tiles need the network;
+  offline, the speed-coloured track still shows on a blank canvas.
 - **Place names** via OpenStreetMap Nominatim (best-effort, always editable).
 - **Retrospective scan**: reconstruct past trips from InfluxDB history for any
   date range, using the exact same detection logic as live.

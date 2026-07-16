@@ -18,7 +18,7 @@ const STR = {
     startPlace: 'Start place', endPlace: 'End place', place: 'Place', savePlaces: 'Save places',
     placeHint: 'A named place is reused for every trip starting or ending within a 250 m radius. Clear a field and save to remove its name.',
     confirmDeletePlace: 'Remove this place name? Every trip near it reverts to the looked-up name.',
-    speed: 'Speed',
+    speed: 'Speed', time: 'Time', timeline: 'Timeline', dragToResize: 'Drag to resize the map',
     hourlyWeather: 'Hourly weather', hr: 'Hr', heel: 'Heel',
     unitNote: 'Mean with p10–p90 range; TWA/AWA show the dominant side (S/P); TWD is the circular mean with ±angular deviation.',
     noWeather: 'No weather statistics (trip has no end time or no data).',
@@ -46,7 +46,7 @@ const STR = {
     startPlace: 'Startplats', endPlace: 'Slutplats', place: 'Plats', savePlaces: 'Spara platser',
     placeHint: 'Ett platsnamn återanvänds för alla trips som startar eller slutar inom 250 m radie. Töm ett fält och spara för att ta bort namnet.',
     confirmDeletePlace: 'Ta bort platsnamnet? Alla trips nära det återgår till det uppslagna namnet.',
-    speed: 'Fart',
+    speed: 'Fart', time: 'Tid', timeline: 'Tidslinje', dragToResize: 'Dra för att ändra kartans storlek',
     hourlyWeather: 'Timväder', hr: 'Tim', heel: 'Kräng',
     unitNote: 'Medel med p10–p90-intervall; TWA/AWA visar dominerande sida (SB/BB); TWD är cirkulärt medel med ±vinkelavvikelse.',
     noWeather: 'Ingen väderstatistik (tripen saknar sluttid eller data).',
@@ -86,6 +86,14 @@ const $ = (sel) => document.querySelector(sel)
 // plus its track points so a maneuver-row click can locate the moment on it.
 let trackMap = null
 let trackPoints = []
+// The moving highlight marker driven by the timeline scrubber, the events keyed
+// by the track index nearest each in time (so scrubbing onto one shows its
+// label), and the info-panel columns present for this trip (fixed for its whole
+// length so scrubbing never adds or drops a cell).
+let scrubDot = null
+let scrubEvents = null
+let scrubFields = []
+let scrubHasMotor = false
 
 function toKnots (ms) {
   return ms == null ? null : ms / MS_PER_KNOT
@@ -174,7 +182,7 @@ function renderList (trips) {
       <td class="route">${escapeHtml(from)} → ${escapeHtml(to)}${tr.motor ? ` <span class="tag">${t('motor')}</span>` : ''}</td>
       <td>${fmtDuration(tr.start_time, tr.stop_time)}</td>
       <td class="num">${tr.distance_nm != null ? n(tr.distance_nm, 1) + ' NM' : '–'}</td>
-      <td class="num">${tr.max_sog != null ? n(toKnots(tr.max_sog), 1) + ' kn' : '–'}</td>
+      <td class="num">${tr.max_stw != null ? n(toKnots(tr.max_stw), 1) + ' kn' : '–'}</td>
       <td class="num">${tr.tack || 0}/${tr.gybe || 0}</td>`
     row.addEventListener('click', () => loadDetail(tr.id))
     tbody.appendChild(row)
@@ -242,12 +250,20 @@ function renderDetail (data) {
     <p class="meta">${fmtDate(tr.start_time)} · ${fmtTime(tr.start_time)}–${fmtTime(tr.stop_time)}
        · ${fmtDuration(tr.start_time, tr.stop_time)}
        ${tr.distance_nm != null ? '· ' + n(tr.distance_nm, 1) + ' NM' : ''}
-       ${tr.max_sog != null ? '· max ' + n(toKnots(tr.max_sog), 1) + ' kn' : ''}
+       ${tr.max_stw != null ? '· max ' + n(toKnots(tr.max_stw), 1) + ' kn' : ''}
        ${engineFrag(tr)}
        ${tr.motor ? `· <span class="tag">${t('motor')}</span>` : ''}
        ${tr.origin === 'retro' ? '· <em>retro</em>' : ''}</p>
 
     <div id="trackmap" class="trackmap" hidden></div>
+    <div id="map-resize" class="map-resize" title="${t('dragToResize')}" hidden></div>
+    <div id="track-info" class="track-info" hidden></div>
+    <div id="track-scrub" class="track-scrub" hidden>
+      <div id="scrub-ticks" class="scrub-ticks"></div>
+      <input type="range" id="scrub" class="scrub" min="0" max="0" step="1" value="0"
+             aria-label="${t('timeline')}">
+      <div class="scrub-times"><span id="scrub-start"></span><span id="scrub-end"></span></div>
+    </div>
 
     <div class="places">
       ${tr.same_place
@@ -302,14 +318,14 @@ function renderDetail (data) {
   document.querySelectorAll('.ev-del').forEach((b) => {
     b.addEventListener('click', () => deleteEvent(b.getAttribute('data-event'), tr.id))
   })
-  // Clicking a maneuver row marks that moment on the track (except when the
-  // click was on its delete button).
+  // Clicking a maneuver row scrubs the timeline to that moment and brings the
+  // map into view (except when the click was on its delete button).
   document.querySelectorAll('.ev-item').forEach((li) => {
     li.addEventListener('click', (ev) => {
       if (ev.target.closest('.ev-del')) {
         return
       }
-      openManeuverPopup(data.events[parseInt(li.getAttribute('data-idx'), 10)], true)
+      scrubToEvent(data.events[parseInt(li.getAttribute('data-idx'), 10)], true)
     })
   })
 
@@ -354,15 +370,15 @@ function cssVar (name, fallback) {
   return v || fallback
 }
 
-// The track point geographically closest to a clicked map location.
-function nearestPoint (map, latlng, points) {
-  let best = null
+// The track index geographically closest to a clicked map location.
+function nearestIndexGeo (map, latlng, points) {
+  let best = 0
   let bd = Infinity
-  for (const p of points) {
-    const d = map.distance(latlng, [p.lat, p.lon])
+  for (let i = 0; i < points.length; i++) {
+    const d = map.distance(latlng, [points[i].lat, points[i].lon])
     if (d < bd) {
       bd = d
-      best = p
+      best = i
     }
   }
   return best
@@ -371,74 +387,91 @@ function nearestPoint (map, latlng, points) {
 // A moment's conditions for the click popup: an optional label (the maneuver
 // type), the time, then speeds, wind, pointing angles and heel — only the
 // fields that actually have a value.
-function snapContent (p, label) {
-  const rows = []
-  const speed = []
-  if (p.sog != null) {
-    speed.push(`SOG ${n(toKnots(p.sog), 1)} kn`)
+// The info-panel columns, in order. `label` is a getter (the heel label is
+// localised); `fmt` renders a point's value. A column is shown for the whole
+// trip if any point has that field (see buildScrubber), with "–" where a given
+// point's value is missing, so the layout is fixed while scrubbing.
+const INFO_FIELDS = [
+  { key: 'sog', label: () => 'SOG', fmt: (p) => `${n(toKnots(p.sog), 1)} kn` },
+  { key: 'stw', label: () => 'STW', fmt: (p) => `${n(toKnots(p.stw), 1)} kn` },
+  { key: 'tws', label: () => 'TWS', fmt: (p) => `${n(p.tws, 1)} m/s` },
+  { key: 'twd', label: () => 'TWD', fmt: (p) => `${n((toDeg(p.twd) + 360) % 360)}°` },
+  { key: 'twa', label: () => 'TWA', fmt: (p) => `${n(Math.abs(toDeg(p.twa)))}°${sideLetter(p.twa)}` },
+  { key: 'awa', label: () => 'AWA', fmt: (p) => `${n(Math.abs(toDeg(p.awa)))}°${sideLetter(p.awa)}` },
+  { key: 'heel', label: () => t('heel'), fmt: (p) => `${n(Math.abs(toDeg(p.heel)))}°` }
+]
+
+// One horizontal info-panel cell: a small label over its value.
+function infoCell (label, value) {
+  return `<span class="ti-cell"><span class="ti-k">${label}</span><span class="ti-v">${value}</span></span>`
+}
+
+// The scrubbed moment's conditions, as a row of cells for the fixed panel below
+// the map: an optional maneuver label with the time, then the trip's present
+// fields (scrubFields), each showing "–" when this point lacks a value.
+function infoPanelHtml (p, label) {
+  const cells = [infoCell(label ? escapeHtml(label) : t('time'), fmtTime(p.t))]
+  scrubFields.forEach((f) => {
+    cells.push(infoCell(f.label(), p[f.key] != null ? f.fmt(p) : '–'))
+  })
+  if (scrubHasMotor) {
+    // No header — the badge stands on its own, vertically centred in the column.
+    const motor = p.motor ? `<span class="tag">${t('motorHour')}</span>` : '<span class="ti-off">–</span>'
+    cells.push(`<span class="ti-cell ti-motor">${motor}</span>`)
   }
-  if (p.stw != null) {
-    speed.push(`STW ${n(toKnots(p.stw), 1)} kn`)
-  }
-  if (speed.length) {
-    rows.push(speed.join(' · '))
-  }
-  const wind = []
-  if (p.tws != null) {
-    wind.push(`TWS ${n(p.tws, 1)} m/s`)
-  }
-  if (p.twd != null) {
-    wind.push(`TWD ${n((toDeg(p.twd) + 360) % 360)}°`)
-  }
-  if (wind.length) {
-    rows.push(wind.join(' · '))
-  }
-  const angle = []
-  if (p.twa != null) {
-    angle.push(`TWA ${n(Math.abs(toDeg(p.twa)))}°${sideLetter(p.twa)}`)
-  }
-  if (p.awa != null) {
-    angle.push(`AWA ${n(Math.abs(toDeg(p.awa)))}°${sideLetter(p.awa)}`)
-  }
-  if (angle.length) {
-    rows.push(angle.join(' · '))
-  }
-  if (p.heel != null) {
-    rows.push(`${t('heel')} ${n(Math.abs(toDeg(p.heel)))}°`)
-  }
-  const head = `<strong>${label ? escapeHtml(label) + ' · ' : ''}${fmtTime(p.t)}</strong>`
-  return `<div class="snap">${head}${rows.map((r) => `<span>${r}</span>`).join('')}</div>`
+  return cells.join('')
 }
 
 function maneuverLabel (ev) {
   return ev.type === 'tack' ? t('tack') : t('gybe')
 }
 
-// Open a maneuver's snapshot popup on the track, at the point nearest in time,
-// labelled with the maneuver type. `pan` (a list-row click, where the map may
-// be scrolled out of view) also brings the map into view and centres it; a
-// marker click on the map itself leaves the view put.
-function openManeuverPopup (ev, pan) {
-  if (!ev || !trackMap || !trackPoints.length) {
-    return
-  }
-  let best = null
+// The track index closest in time to a moment (a maneuver).
+function nearestIndexByTime (timeMs) {
+  let best = 0
   let bd = Infinity
-  for (const p of trackPoints) {
-    const d = Math.abs(p.t - ev.time)
+  for (let i = 0; i < trackPoints.length; i++) {
+    const d = Math.abs(trackPoints[i].t - timeMs)
     if (d < bd) {
       bd = d
-      best = p
+      best = i
     }
   }
-  if (!best) {
+  return best
+}
+
+// Move the timeline (slider, highlight dot and info panel) to a track index.
+// `pan` (a list-row click, where the map may be scrolled out of view) also
+// brings the map into view and centres it; scrubbing and on-map clicks don't.
+function scrubTo (idx, pan) {
+  if (!trackMap || !trackPoints.length) {
     return
+  }
+  idx = Math.max(0, Math.min(trackPoints.length - 1, idx))
+  const p = trackPoints[idx]
+  const slider = $('#scrub')
+  if (slider) {
+    slider.value = String(idx)
+  }
+  if (scrubDot) {
+    scrubDot.setLatLng([p.lat, p.lon]).bringToFront()
+  }
+  const ev = scrubEvents && scrubEvents.get(idx)
+  const info = $('#track-info')
+  if (info) {
+    info.innerHTML = infoPanelHtml(p, ev ? maneuverLabel(ev) : null)
   }
   if (pan) {
     trackMap.getContainer().scrollIntoView({ behavior: 'smooth', block: 'center' })
-    trackMap.panTo([best.lat, best.lon])
+    trackMap.panTo([p.lat, p.lon])
   }
-  L.popup().setLatLng([best.lat, best.lon]).setContent(snapContent(best, maneuverLabel(ev))).openOn(trackMap)
+}
+
+// Scrub to a maneuver by its time.
+function scrubToEvent (ev, pan) {
+  if (ev) {
+    scrubTo(nearestIndexByTime(ev.time), pan)
+  }
 }
 
 // Fetch the downsampled position+SOG track and draw it on a Leaflet map with an
@@ -450,11 +483,7 @@ async function renderTrack (id, events) {
   if (!host || typeof L === 'undefined') {
     return
   }
-  if (trackMap) {
-    trackMap.remove()
-    trackMap = null
-    trackPoints = []
-  }
+  teardownTrack()
   let points
   try {
     points = (await getJSON(`${READ}/trips/${id}/track`)).points || []
@@ -513,14 +542,11 @@ function drawTrack (host, points, events) {
 
   // A fat transparent line over the whole track gives a comfortable click/tap
   // target (the coloured line is thin, awkward to hit on touch). Clicking it
-  // opens a popup with the nearest point's snapshot, like a maneuver marker.
+  // scrubs the timeline to the nearest point, driving the info panel and dot.
   L.polyline(latlngs, { color: '#000', opacity: 0.01, weight: 16 })
     .addTo(map)
     .on('click', (e) => {
-      const p = nearestPoint(map, e.latlng, points)
-      if (p) {
-        L.popup().setLatLng([p.lat, p.lon]).setContent(snapContent(p)).openOn(map)
-      }
+      scrubTo(nearestIndexGeo(map, e.latlng, points), false)
     })
 
   // Tacks and gybes as small dots in their report colours.
@@ -539,7 +565,7 @@ function drawTrack (host, points, events) {
     })
       .addTo(map)
       .bindTooltip(`${maneuverLabel(e)} · ${fmtTime(e.time)}`)
-      .on('click', () => openManeuverPopup(e, false))
+      .on('click', () => scrubToEvent(e, false))
   })
 
   // Start and end, larger and ringed so they stand out from the heat-line.
@@ -549,7 +575,15 @@ function drawTrack (host, points, events) {
   endDot(latlngs[0], cssVar('--tack', '#2a7d4f'))
   endDot(latlngs[latlngs.length - 1], cssVar('--danger', '#b23b3b'))
 
+  // The moving highlight dot the scrubber drives, drawn on top of everything.
+  scrubDot = L.circleMarker(latlngs[0], {
+    radius: 8, color: '#fff', weight: 3, fillColor: cssVar('--accent', '#1f6f8b'), fillOpacity: 1
+  }).addTo(map)
+
   map.fitBounds(L.latLngBounds(latlngs), { padding: [24, 24] })
+
+  setupMapResize(host, map)
+  buildScrubber(points, events)
 
   // Speed legend (purple→orange gradient with the min/max in knots).
   if (sogs.length) {
@@ -569,6 +603,92 @@ function drawTrack (host, points, events) {
     }
     legend.addTo(map)
   }
+}
+
+// A touch- and mouse-friendly drag handle under the map that grows or shrinks
+// its height for this view only (CSS resize doesn't work on touch). Leaflet is
+// told to re-measure on each move so tiles and the track keep filling the box.
+function setupMapResize (host, map) {
+  const handle = $('#map-resize')
+  if (!handle) {
+    return
+  }
+  handle.hidden = false
+  const minH = 220
+  const maxH = Math.round(window.innerHeight * 0.9)
+  let startY = 0
+  let startH = 0
+  const onMove = (e) => {
+    const h = Math.max(minH, Math.min(maxH, startH + (e.clientY - startY)))
+    host.style.height = `${h}px`
+    map.invalidateSize({ animate: false })
+  }
+  const onUp = (e) => {
+    if (handle.hasPointerCapture(e.pointerId)) {
+      handle.releasePointerCapture(e.pointerId)
+    }
+    handle.removeEventListener('pointermove', onMove)
+    handle.removeEventListener('pointerup', onUp)
+    // A browser-hijacked touch fires pointercancel, not pointerup; clean up on
+    // both so a listener never lingers into the next drag.
+    handle.removeEventListener('pointercancel', onUp)
+  }
+  handle.onpointerdown = (e) => {
+    startY = e.clientY
+    startH = host.getBoundingClientRect().height
+    handle.setPointerCapture(e.pointerId)
+    handle.addEventListener('pointermove', onMove)
+    handle.addEventListener('pointerup', onUp)
+    handle.addEventListener('pointercancel', onUp)
+    e.preventDefault()
+  }
+}
+
+// Wire up the timeline under the map: set the slider's range to the track, mark
+// each maneuver both on the slider (a tick) and in a lookup keyed by track index
+// (so scrubbing onto one shows its label), reveal the info panel and slider, and
+// seed both at the start point.
+function buildScrubber (points, events) {
+  const slider = $('#scrub')
+  const info = $('#track-info')
+  const scrub = $('#track-scrub')
+  if (!slider || !info || !scrub) {
+    return
+  }
+  const last = points.length - 1
+  slider.min = '0'
+  slider.max = String(last)
+  slider.value = '0'
+  $('#scrub-start').textContent = fmtTime(points[0].t)
+  $('#scrub-end').textContent = fmtTime(points[last].t)
+
+  // Fix the panel's columns to the fields this trip actually logged, so the
+  // cell set never changes as the value scrubs (a field null at one point but
+  // present elsewhere still keeps its column, showing "–" where it's missing).
+  scrubFields = INFO_FIELDS.filter((f) => points.some((p) => p[f.key] != null))
+  // Reserve an engine column only for a trip that ran the engine at all.
+  scrubHasMotor = points.some((p) => p.motor)
+
+  // Map each maneuver to its nearest track index (for scrub labels) and lay a
+  // tick at that fraction of the slider width.
+  scrubEvents = new Map()
+  const ticks = $('#scrub-ticks')
+  ticks.innerHTML = ''
+  events.forEach((e) => {
+    const idx = nearestIndexByTime(e.time)
+    scrubEvents.set(idx, e)
+    const pct = last > 0 ? (idx / last) * 100 : 0
+    const tick = document.createElement('span')
+    tick.className = `scrub-tick scrub-tick-${e.type}`
+    tick.style.left = `${pct}%`
+    tick.title = `${maneuverLabel(e)} · ${fmtTime(e.time)}`
+    ticks.appendChild(tick)
+  })
+
+  slider.oninput = () => scrubTo(parseInt(slider.value, 10), false)
+  info.hidden = false
+  scrub.hidden = false
+  scrubTo(0, false)
 }
 
 async function deleteEvent (eventId, tripId) {
@@ -720,11 +840,23 @@ function showView (which) {
   $('#detail-view').hidden = which !== 'detail'
   // Tear the map down when leaving the detail, so its tile layers and timers
   // don't linger in the hidden view.
-  if (which !== 'detail' && trackMap) {
-    trackMap.remove()
-    trackMap = null
-    trackPoints = []
+  if (which !== 'detail') {
+    teardownTrack()
   }
+}
+
+// Tear the map (and everything hung off it) down so its tile layers and timers
+// don't linger.
+function teardownTrack () {
+  if (trackMap) {
+    trackMap.remove()
+  }
+  trackMap = null
+  trackPoints = []
+  scrubDot = null
+  scrubEvents = null
+  scrubFields = []
+  scrubHasMotor = false
 }
 
 function escapeHtml (s) {

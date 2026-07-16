@@ -238,13 +238,38 @@ input {
 /* track map */
 .trackmap {
   height: 340px;
-  margin-bottom: 1.25rem;
+  overflow: hidden;
+  margin-bottom: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   /* Water-ish backdrop so an offline map (no tiles) still frames the track. */
   background: #aad3df;
   box-shadow: var(--shadow);
   z-index: 0;
+}
+
+/* Drag handle under the map to grow/shrink it for this view (works with touch,
+   unlike CSS resize). The height is never persisted, so reopening a trip returns
+   to the default. */
+.map-resize {
+  height: 16px;
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  touch-action: none;
+  color: var(--muted);
+}
+.map-resize::before {
+  content: "";
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+}
+.map-resize:hover::before {
+  background: var(--accent);
 }
 @media (prefers-color-scheme: dark) {
   .trackmap {
@@ -272,28 +297,85 @@ input {
 .track-legend .tl-label {
   font-variant-numeric: tabular-nums;
 }
-/* click-to-inspect snapshot popup */
-.snap {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  font-variant-numeric: tabular-nums;
-}
-.snap strong {
-  font-size: 0.95rem;
-}
-/* theme the Leaflet popup so it matches the panel in dark mode too */
-.leaflet-popup-content-wrapper,
-.leaflet-popup-tip {
+/* horizontal info panel between the map and the timeline: the scrubbed (or
+   clicked) moment's conditions, as a row of small label-over-value cells. */
+.track-info {
+  /* Equal-width tracks so a cell's width is fixed by the grid, not its value —
+     the panel never reflows as the numbers scrub. The column count follows the
+     container width (auto-fit), and the cell set is fixed per trip. */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(4.75rem, 1fr));
+  gap: 0.5rem 0.75rem;
+  padding: 0.6rem 0.9rem;
+  margin-bottom: 0.5rem;
   background: var(--panel);
-  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
   box-shadow: var(--shadow);
 }
-.leaflet-popup-content {
-  margin: 0.5rem 0.75rem;
+.ti-cell {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  min-width: 0;
 }
-.leaflet-container a.leaflet-popup-close-button {
+.ti-k {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--muted);
+}
+.ti-v {
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* The engine cell has no label; its badge stands alone, centred over the column
+   height so it lines up between the neighbours' label and value rows. */
+.ti-motor {
+  justify-content: center;
+  align-items: flex-start;
+}
+.ti-off {
+  color: var(--muted);
+}
+
+/* timeline scrubber under the info panel */
+.track-scrub {
+  margin-bottom: 1.25rem;
+}
+.scrub-ticks {
+  position: relative;
+  height: 7px;
+  margin: 0 6px 1px;
+}
+.scrub-tick {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 7px;
+  margin-left: -1px;
+  border-radius: 1px;
+}
+.scrub-tick-tack {
+  background: var(--tack);
+}
+.scrub-tick-gybe {
+  background: var(--gybe);
+}
+.scrub {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.scrub-times {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin: 0 4px;
 }
 
 .events {

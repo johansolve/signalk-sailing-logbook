@@ -184,13 +184,13 @@ module.exports = function (app) {
 
   async function completeTripAsync (tripId, startMs, stopMs, stopPos) {
     let distanceNm = null
-    let maxSog = null
+    let maxStw = null
     try {
       const agg = await influx.tripAggregate(startMs, stopMs)
       if (agg.meanSog != null) {
         distanceNm = (agg.meanSog * (stopMs - startMs)) / 1000 / NM
       }
-      maxSog = agg.maxSog
+      maxStw = agg.maxStw
     } catch (e) {
       app.error(`trip aggregate failed: ${e.message}`)
     }
@@ -206,7 +206,7 @@ module.exports = function (app) {
         stopLat: stopPos.lat,
         stopLon: stopPos.lon,
         distanceNm,
-        maxSog
+        maxStw
       })
       // Now that the end is known, drop maneuvers near it in time or distance
       // (dropping sails, mooring turns) or while the engine was running, and
@@ -438,6 +438,52 @@ module.exports = function (app) {
     db.setUserVersion(1)
   }
 
+  // One-time backfill: (re)compute max_stw from InfluxDB for every complete
+  // trip, sequentially so we don't flood the DB. Guarded by user_version so it
+  // runs once; a trip whose window has no STW data stays null and simply shows
+  // no max. Runs in the background — start() must not block on it. Version 3
+  // recomputes for all trips (version 2 briefly stored a raw max that the
+  // paddle-wheel spikes polluted; the p99 peak replaces it).
+  async function backfillMaxStwOnce () {
+    if (db.userVersion() >= 3) {
+      return
+    }
+    const trips = db.completeTripWindows()
+    let ok = 0
+    let failed = 0
+    for (const t of trips) {
+      if (!db) {
+        return
+      }
+      try {
+        const agg = await influx.tripAggregate(t.start_time, t.stop_time)
+        if (db && agg.maxStw != null) {
+          db.setMaxStw(t.id, agg.maxStw)
+        }
+        ok++
+      } catch (e) {
+        failed++
+        app.debug(`max_stw backfill failed for trip ${t.id}: ${e.message}`)
+      }
+    }
+    if (!db) {
+      return
+    }
+    // Don't burn the one-shot guard on a transient InfluxDB outage: only defer
+    // when there were trips but *every* query threw (Influx unreachable), so a
+    // later restart retries. Any run with at least one success — or with no
+    // failures at all, including genuinely dataless trips whose query returns
+    // null without throwing — counts as complete and bumps the guard. (A partial
+    // outage that clears mid-run leaves a few old trips without a peak; that's
+    // cosmetic and not worth re-running the whole backfill for.)
+    if (trips.length && !ok && failed) {
+      app.debug('max_stw backfill deferred: InfluxDB unreachable, will retry')
+      return
+    }
+    db.setUserVersion(3)
+    app.debug(`max_stw backfill done (${ok} of ${trips.length} trips)`)
+  }
+
   // A maneuver is an "edge" maneuver (harbour departure/arrival, to be ignored)
   // if it is close in time OR in distance to the trip start or end. The end
   // checks are null-safe so this also works on a still-active trip (start only).
@@ -527,14 +573,14 @@ module.exports = function (app) {
 
   async function createRetroTrip (startMs, stopMs) {
     let distanceNm = null
-    let maxSog = null
+    let maxStw = null
     let bounds = { start: {}, stop: {} }
     try {
       const agg = await influx.tripAggregate(startMs, stopMs)
       if (agg.meanSog != null) {
         distanceNm = (agg.meanSog * (stopMs - startMs)) / 1000 / NM
       }
-      maxSog = agg.maxSog
+      maxStw = agg.maxStw
       bounds = await influx.positionBounds(startMs, stopMs)
     } catch (e) {
       app.error(`retro aggregate failed: ${e.message}`)
@@ -547,7 +593,7 @@ module.exports = function (app) {
       stopLat: bounds.stop.lat,
       stopLon: bounds.stop.lon,
       distanceNm,
-      maxSog,
+      maxStw,
       origin: 'retro'
     })
 
@@ -677,6 +723,9 @@ module.exports = function (app) {
       password: options.password,
       paths: { engineState: options.engineStatePath || 'propulsion.0.state' }
     })
+
+    // Backfill max_stw for pre-existing trips (background, never blocks start).
+    backfillMaxStwOnce().catch((e) => app.debug(`max_stw backfill error: ${e.message}`))
 
     // Resume an open trip left behind by a restart.
     const active = db.getActiveTrip()
@@ -874,6 +923,12 @@ module.exports = function (app) {
     const stepSec = Math.max(5, Math.round((stopMs - trip.start_time) / 1000 / 600))
     try {
       const points = await influx.trackSeries(trip.start_time, stopMs, stepSec)
+      // Flag each point that fell under engine, so the map's info panel can badge
+      // it (same engine-state source as the hourly table and maneuver gating).
+      const engine = await analyzeTripEngine(trip.start_time, stopMs)
+      points.forEach((p) => {
+        p.motor = engine.onAt(p.t)
+      })
       res.json({ points })
     } catch (e) {
       app.error(`track failed: ${e.message}`)

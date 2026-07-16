@@ -8,7 +8,7 @@ const trip = {
   start_time: T,
   stop_time: T + 3600000,
   distance_nm: 5.2,
-  max_sog: 3.4,
+  max_stw: 3.4,
   start_place: 'Alpha',
   stop_place: 'Beta',
   engine_share: 0

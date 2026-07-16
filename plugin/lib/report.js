@@ -211,7 +211,7 @@ function buildReport (trip, events, hourly, lang, motor) {
     return p ? ` (${p})` : ''
   }
   const distFrag = trip.distance_nm != null ? `, ${fmt(trip.distance_nm, 1)} NM` : ''
-  const maxFrag = trip.max_sog != null ? `, max ${fmt(toKnots(trip.max_sog), 1)} kn` : ''
+  const maxFrag = trip.max_stw != null ? `, max ${fmt(toKnots(trip.max_stw), 1)} kn` : ''
   const dur = duration(trip.start_time, trip.stop_time)
 
   // Motoring time out of the total, shown for any trip that ran the engine at
