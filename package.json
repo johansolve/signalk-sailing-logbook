@@ -1,6 +1,6 @@
 {
   "name": "signalk-sailing-logbook",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "displayName": "Sailing Logbook",
   "description": "Automatic sailing logbook: detects trips from SOG, logs tacks/gybes, and reports hourly wind and heel statistics computed from the onboard InfluxDB.",
   "main": "plugin/index.js",

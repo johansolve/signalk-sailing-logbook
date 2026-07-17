@@ -7,7 +7,7 @@ It detects trips from boat speed, marks tacks and gybes, and reports hourly wind
 and heel statistics computed on demand from the onboard InfluxDB. A built-in web
 app lists your trips and produces a ready-to-paste logbook entry for each one.
 
-![The web app: a trip detail with the speed-coloured track map, the timeline scrubber and its info panel, hourly weather and the maneuver list](docs/screenshot.png)
+![The web app: a trip detail with the speed-coloured track map, the timeline scrubber and its info panel, free-text notes, hourly weather and the maneuver list](docs/screenshot.png)
 
 ## Features
 
@@ -46,6 +46,8 @@ app lists your trips and produces a ready-to-paste logbook entry for each one.
   below the map to enlarge it for a closer look. The map tiles need the network;
   offline, the speed-coloured track still shows on a blank canvas.
 - **Place names** via OpenStreetMap Nominatim (best-effort, always editable).
+- **Trip notes**: a free-text field for your own remarks on a trip. They're saved
+  with the trip and included in the copied logbook entry, above the hourly data.
 - **Retrospective scan**: reconstruct past trips from InfluxDB history for any
   date range, using the exact same detection logic as live.
 - **Web app** with a trip list, a detail view, editable place names, per-maneuver
@@ -112,8 +114,8 @@ admin **Webapps** menu.
 
 - Reading (trip list, detail, report) works for anonymous users when the server
   allows readonly access.
-- Editing place names, deleting trips/maneuvers, and running a history scan
-  require an admin login.
+- Editing place names and notes, deleting trips/maneuvers, and running a history
+  scan require an admin login.
 
 ## HTTP API
 
@@ -127,6 +129,7 @@ Read (honour readonly access), under `/signalk/v1/api/sailing-logbook`:
 Admin only, under `/plugins/signalk-sailing-logbook`:
 
 - `PUT /trips/:id/place` — set manual start/end place names
+- `PUT /trips/:id/notes` — set or clear the trip's free-text notes
 - `DELETE /trips/:id` — delete a trip
 - `DELETE /events/:id` — delete a single maneuver
 - `POST /scan` — `{ from, to }` (ms epoch): retrospectively detect trips

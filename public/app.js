@@ -18,6 +18,8 @@ const STR = {
     startPlace: 'Start place', endPlace: 'End place', place: 'Place', savePlaces: 'Save places',
     placeHint: 'A named place is reused for every trip starting or ending within a 250 m radius. Clear a field and save to remove its name.',
     confirmDeletePlace: 'Remove this place name? Every trip near it reverts to the looked-up name.',
+    notes: 'Notes', saveNotes: 'Save notes', notesSaved: 'Notes saved',
+    notesPlaceholder: 'Your own notes for this trip…',
     speed: 'Speed', time: 'Time', timeline: 'Timeline', dragToResize: 'Drag to resize the map',
     hourlyWeather: 'Hourly weather', hr: 'Hr', heel: 'Heel',
     unitNote: 'Mean with p10–p90 range; TWA/AWA show the dominant side (S/P); TWD is the circular mean with ±angular deviation.',
@@ -46,6 +48,8 @@ const STR = {
     startPlace: 'Startplats', endPlace: 'Slutplats', place: 'Plats', savePlaces: 'Spara platser',
     placeHint: 'Ett platsnamn återanvänds för alla trips som startar eller slutar inom 250 m radie. Töm ett fält och spara för att ta bort namnet.',
     confirmDeletePlace: 'Ta bort platsnamnet? Alla trips nära det återgår till det uppslagna namnet.',
+    notes: 'Anteckningar', saveNotes: 'Spara anteckningar', notesSaved: 'Anteckningar sparade',
+    notesPlaceholder: 'Egna anteckningar för den här tripen…',
     speed: 'Fart', time: 'Tid', timeline: 'Tidslinje', dragToResize: 'Dra för att ändra kartans storlek',
     hourlyWeather: 'Timväder', hr: 'Tim', heel: 'Kräng',
     unitNote: 'Medel med p10–p90-intervall; TWA/AWA visar dominerande sida (SB/BB); TWD är cirkulärt medel med ±vinkelavvikelse.',
@@ -255,7 +259,10 @@ function renderDetail (data) {
        ${tr.motor ? `· <span class="tag">${t('motor')}</span>` : ''}
        ${tr.origin === 'retro' ? '· <em>retro</em>' : ''}</p>
 
-    <div id="trackmap" class="trackmap" hidden></div>
+    <!-- Shown from the start (its water backdrop is a placeholder) so the map's
+         height is reserved at load and the content below doesn't jump when the
+         async track resolves. renderTrack hides it only if the trip has no track. -->
+    <div id="trackmap" class="trackmap"></div>
     <div id="map-resize" class="map-resize" title="${t('dragToResize')}" hidden></div>
     <div id="track-info" class="track-info" hidden></div>
     <div id="track-scrub" class="track-scrub" hidden>
@@ -279,6 +286,15 @@ function renderDetail (data) {
       <button id="save-places">${t('savePlaces')}</button>
     </div>
     <p class="hint place-hint">${t('placeHint')}</p>
+
+    <details class="notes"${tr.notes ? ' open' : ''}>
+      <summary>${t('notes')}</summary>
+      <div class="notes-body">
+        <textarea id="trip-notes" class="notes-field" rows="6"
+                  placeholder="${escapeAttr(t('notesPlaceholder'))}">${escapeHtml(tr.notes || '')}</textarea>
+        <button id="save-notes">${t('saveNotes')}</button>
+      </div>
+    </details>
 
     <div class="weather">
       <h3>${t('hourlyWeather')}</h3>
@@ -313,6 +329,7 @@ function renderDetail (data) {
   // and saving is understood as a delete rather than a no-op.
   const named = { start: tr.start_place_manual != null, stop: tr.stop_place_manual != null }
   $('#save-places').addEventListener('click', () => savePlaces(tr.id, named))
+  $('#save-notes').addEventListener('click', () => saveNotes(tr.id))
   $('#copy-report').addEventListener('click', () => copyReport(tr.id))
   $('#delete-trip').addEventListener('click', () => deleteTrip(tr.id))
   document.querySelectorAll('.ev-del').forEach((b) => {
@@ -480,7 +497,12 @@ function scrubToEvent (ev, pan) {
 // A trip with fewer than two points (no logged position) hides the map.
 async function renderTrack (id, events) {
   const host = document.getElementById('trackmap')
-  if (!host || typeof L === 'undefined') {
+  if (!host) {
+    return
+  }
+  // Leaflet failed to load: collapse the reserved box, there's nothing to draw.
+  if (typeof L === 'undefined') {
+    host.hidden = true
     return
   }
   teardownTrack()
@@ -488,11 +510,18 @@ async function renderTrack (id, events) {
   try {
     points = (await getJSON(`${READ}/trips/${id}/track`)).points || []
   } catch (e) {
+    host.hidden = true
     return
   }
   // A fast back-and-forth to another trip may have replaced #detail while the
   // track was in flight; the captured host is then detached, so bail.
-  if (!host.isConnected || points.length < 2) {
+  if (!host.isConnected) {
+    return
+  }
+  // No logged position (or a single point): collapse the reserved box so a
+  // trackless trip doesn't leave an empty placeholder.
+  if (points.length < 2) {
+    host.hidden = true
     return
   }
 
@@ -703,6 +732,27 @@ async function deleteEvent (eventId, tripId) {
     loadDetail(tripId)
   } catch (e) {
     setStatus(t('couldNotRemove') + e.message, true)
+  }
+}
+
+async function saveNotes (id) {
+  const notes = $('#trip-notes').value.trim()
+  try {
+    const r = await fetch(`${ADMIN}/trips/${id}/notes`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes: notes || null })
+    })
+    if (r.status === 401 || r.status === 403) {
+      throw new Error(t('adminLogin'))
+    }
+    if (!r.ok) {
+      throw new Error(`HTTP ${r.status}`)
+    }
+    setStatus(t('notesSaved'))
+    loadDetail(id)
+  } catch (e) {
+    setStatus(t('couldNotSave') + e.message, true)
   }
 }
 

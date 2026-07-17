@@ -235,6 +235,36 @@ input {
   color: var(--ink);
 }
 
+/* notes accordion (collapsed when empty, opened when a trip has notes) */
+.notes {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 1.25rem;
+  box-shadow: var(--shadow);
+}
+.notes summary {
+  cursor: pointer;
+  padding: 0.7rem 1rem;
+  font-weight: 600;
+}
+.notes-body {
+  padding: 0 1rem 1rem;
+}
+.notes-field {
+  display: block;
+  width: 100%;
+  min-height: 7rem;
+  resize: vertical;
+  font: inherit;
+  padding: 0.6rem 0.7rem;
+  margin-bottom: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+}
+
 /* track map */
 .trackmap {
   height: 340px;

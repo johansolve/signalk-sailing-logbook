@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS trips (
   max_sog            REAL,
   max_stw            REAL,
   engine_share       REAL,
+  notes              TEXT,
   status             TEXT NOT NULL DEFAULT 'active',
   origin             TEXT NOT NULL DEFAULT 'live'
 );
@@ -67,7 +68,7 @@ function open (filePath) {
   // Migrations for columns added to existing databases. A "duplicate column"
   // error means the column is already in SCHEMA (fresh DB) and is benign;
   // anything else (locked, corrupt) must surface, not hide.
-  for (const col of ['engine_share REAL', 'max_stw REAL']) {
+  for (const col of ['engine_share REAL', 'max_stw REAL', 'notes TEXT']) {
     try {
       db.exec(`ALTER TABLE trips ADD COLUMN ${col}`)
     } catch (e) {
@@ -97,6 +98,7 @@ function open (filePath) {
         WHERE id = @id`
     ),
     setMaxStw: db.prepare('UPDATE trips SET max_stw = @max_stw WHERE id = @id'),
+    setNotes: db.prepare('UPDATE trips SET notes = @notes WHERE id = @id'),
     completeTripWindows: db.prepare(
       "SELECT id, start_time, stop_time FROM trips " +
         "WHERE status = 'complete' AND stop_time IS NOT NULL"
@@ -183,6 +185,10 @@ function open (filePath) {
 
     setMaxStw (id, maxStw) {
       stmts.setMaxStw.run({ id, max_stw: maxStw != null ? maxStw : null })
+    },
+
+    setNotes (id, notes) {
+      stmts.setNotes.run({ id, notes: notes != null ? notes : null })
     },
 
     setGeocode (id, { startPlace, stopPlace }) {

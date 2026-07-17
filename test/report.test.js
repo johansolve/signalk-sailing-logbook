@@ -60,6 +60,17 @@ describe('buildReport', function () {
     assert.doesNotMatch(line, /AWA/)
   })
 
+  it('includes the skipper notes ahead of the hourly data', function () {
+    const hourly = [{ time: T, tws: { mean: 5, p10: 4, p90: 6 }, stw: {}, twd: {}, twa: {}, awa: {}, heel: {} }]
+    const withNotes = Object.assign({}, trip, { notes: 'Reefed at the lighthouse.' })
+    const out = buildReport(withNotes, [], hourly, 'en', false)
+    assert.match(out, /Reefed at the lighthouse\./)
+    // the note comes before the first hourly data row
+    assert.ok(out.indexOf('Reefed') < out.search(/^\d\d:/m))
+    // a trip without notes doesn't invent a blank line for them
+    assert.doesNotMatch(buildReport(trip, [], hourly, 'en', false), /Reefed/)
+  })
+
   it('reports motoring time and percent when the engine ran', function () {
     const mixed = Object.assign({}, trip, { engine_share: 0.25 })
     const out = buildReport(mixed, [], [], 'en', false)

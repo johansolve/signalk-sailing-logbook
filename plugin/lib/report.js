@@ -262,6 +262,12 @@ function buildReport (trip, events, hourly, lang, motor) {
     lines.push('')
   }
 
+  // ---- skipper's own free-text notes, above the hourly data ----
+  if (trip.notes && trip.notes.trim()) {
+    lines.push(trip.notes.trim())
+    lines.push('')
+  }
+
   // ---- hourly weather, one self-labelled line per hour ----
   if (hourly && hourly.length) {
     lines.push(s.hourlyIntro)

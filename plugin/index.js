@@ -1026,6 +1026,29 @@ module.exports = function (app) {
       res.json(withPlaces(db.getTrip(id)))
     })
 
+    // Save (or clear) the skipper's free-text notes for a trip. An empty or
+    // whitespace-only body clears them (stored as NULL).
+    router.put('/trips/:id/notes', (req, res) => {
+      const id = tripIdParam(req)
+      if (id == null) {
+        return res.status(400).json({ error: 'invalid id' })
+      }
+      const body = req.body || {}
+      if (body.notes != null && typeof body.notes !== 'string') {
+        return res.status(400).json({ error: 'notes must be a string' })
+      }
+      if (dbGone(res)) {
+        return
+      }
+      const trip = db.getTrip(id)
+      if (!trip) {
+        return res.status(404).json({ error: 'not found' })
+      }
+      const notes = typeof body.notes === 'string' && body.notes.trim() ? body.notes.trim() : null
+      db.setNotes(id, notes)
+      res.json(withPlaces(db.getTrip(id)))
+    })
+
     router.delete('/trips/:id', (req, res) => {
       const id = tripIdParam(req)
       if (id == null) {
