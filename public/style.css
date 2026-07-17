@@ -503,6 +503,18 @@ h3 {
   gap: 0.75rem;
   margin: 1.5rem 0 0.5rem;
 }
+.report-wrap {
+  position: relative;
+}
+/* The report box's own copy button, floating top-right over the text. */
+.report-copy {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 1;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.8rem;
+}
 .report {
   background: var(--panel);
   border: 1px solid var(--line);

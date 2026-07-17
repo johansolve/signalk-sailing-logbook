@@ -1,7 +1,7 @@
 'use strict'
 
 const assert = require('node:assert/strict')
-const { buildReport } = require('../plugin/lib/report')
+const { buildReport, languages } = require('../plugin/lib/report')
 
 const T = Date.parse('2026-07-14T09:00:00Z')
 const trip = {
@@ -31,6 +31,12 @@ describe('buildReport', function () {
   it('the Swedish header uses Segling / Motortur', function () {
     assert.match(buildReport(trip, events, [], 'sv', false), /Segling/)
     assert.match(buildReport(trip, events, [], 'sv', true), /Motortur/)
+  })
+
+  it('exposes its languages and falls back to English for an unknown one', function () {
+    assert.ok(languages.includes('en') && languages.includes('sv'))
+    // a language not in STR renders the English wording rather than throwing
+    assert.match(buildReport(trip, events, [], 'de', false), /Passage/)
   })
 
   it('omits hourly fields that have no data (no dash noise)', function () {

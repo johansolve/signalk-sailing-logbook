@@ -52,8 +52,10 @@ app lists your trips and produces a ready-to-paste logbook entry for each one.
   date range, using the exact same detection logic as live.
 - **Web app** with a trip list, a detail view, editable place names, per-maneuver
   deletion, and a one-click plain-text logbook entry to copy.
-- **Bilingual** (English / Swedish): follows the browser language, with a
-  `?lang=en` / `?lang=sv` override.
+- **Localizable** web app: English and Swedish are included, and adding a
+  language is just a string set (`STR` in `public/app.js` for the UI and
+  `plugin/lib/report.js` for the logbook entry, each with its `locale`). Follows
+  the browser language, with a `?lang=` override.
 
 ## Requirements
 

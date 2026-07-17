@@ -1,7 +1,8 @@
 /*
  * Builds a plain-text logbook entry for a completed trip, ready to paste into
  * the skipper's own logbook. Input is the trip row, its events, the hourly
- * statistics from influx.hourlyStats(), and a language ('en' or 'sv'). All
+ * statistics from influx.hourlyStats(), and a language key present in STR
+ * (English and Swedish ship; add a string set to STR for more). All
  * SI->display conversion happens here.
  *
  * The summary is prose; the hourly weather is one self-labelled line per hour so
@@ -28,6 +29,11 @@ const NUM = {
 const STR = {
   en: {
     log: 'LOG', unknown: 'unknown', tack: 'tack', gybe: 'gybe',
+    // The one-line trip summary. `f` carries the pre-formatted fragments so each
+    // language controls only the wording and order, not the number formatting.
+    summary: (f) =>
+      `${f.motor ? 'Motoring' : 'Passage'} ${f.date}. Departed ${f.sp}, arrived ${f.ep}. ` +
+      `${f.dur}${f.distFrag}${f.maxFrag}${f.motorFrag}.${f.tail}`,
     hourlyIntro: 'Hourly weather, mean (p10–p90); TWA/AWA with dominant side S/P; TWD mean (±deviation):',
     heel: 'Heel', stbd: 'S', port: 'P', locale: 'en-GB', unitH: 'h', unitMin: 'min',
     motorBadge: 'Motor', engineLabel: 'engine', pct: (v) => `${v}%`,
@@ -44,6 +50,9 @@ const STR = {
   },
   sv: {
     log: 'LOGG', unknown: 'okänd', tack: 'slag', gybe: 'gipp',
+    summary: (f) =>
+      `${f.motor ? 'Motortur' : 'Segling'} ${f.date}. Avgång ${f.sp}, ankomst ${f.ep}. ` +
+      `Restid ${f.dur}${f.distFrag}${f.maxFrag}${f.motorFrag}.${f.tail}`,
     hourlyIntro: 'Timväder, medel (p10–p90); TWA/AWA med dominerande sida SB/BB; TWD medel (±avvikelse):',
     heel: 'Kräng', stbd: 'SB', port: 'BB', locale: 'sv-SE', unitH: 'h', unitMin: 'min',
     motorBadge: 'Motor', engineLabel: 'motor', pct: (v) => `${v} %`,
@@ -241,17 +250,7 @@ function buildReport (trip, events, hourly, lang, motor) {
   const ep = `${stopPlace} ${clock(trip.stop_time)}${pos(trip.stop_lat, trip.stop_lon)}`
   // Motoring trips are labelled as such and omit the maneuver reporting.
   const tail = motor ? '' : ` ${maneuverPhrase}.`
-  if (lang === 'sv') {
-    lines.push(
-      `${motor ? 'Motortur' : 'Segling'} ${dateStr(trip.start_time)}. Avgång ${sp}, ankomst ${ep}. ` +
-      `Restid ${dur}${distFrag}${maxFrag}${motorFrag}.${tail}`
-    )
-  } else {
-    lines.push(
-      `${motor ? 'Motoring' : 'Passage'} ${dateStr(trip.start_time)}. Departed ${sp}, arrived ${ep}. ` +
-      `${dur}${distFrag}${maxFrag}${motorFrag}.${tail}`
-    )
-  }
+  lines.push(s.summary({ motor, date: dateStr(trip.start_time), sp, ep, dur, distFrag, maxFrag, motorFrag, tail }))
 
   lines.push('')
 
@@ -307,4 +306,6 @@ function buildReport (trip, events, hourly, lang, motor) {
   return lines.join('\n')
 }
 
-module.exports = { buildReport }
+// The languages the report can render, so the HTTP layer can validate ?lang
+// against what actually exists here rather than a hardcoded pair.
+module.exports = { buildReport, languages: Object.keys(STR) }

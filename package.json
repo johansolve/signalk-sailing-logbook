@@ -2,8 +2,16 @@
   "name": "signalk-sailing-logbook",
   "version": "0.6.0",
   "displayName": "Sailing Logbook",
-  "description": "Automatic sailing logbook: detects trips from SOG, logs tacks/gybes, and reports hourly wind and heel statistics computed from the onboard InfluxDB.",
+  "description": "Automatic sailing logbook: detects trips from SOG, logs tacks/gybes, and reports hourly wind and heel statistics computed from the onboard InfluxDB. Localizable web app (English and Swedish included).",
   "main": "plugin/index.js",
+  "files": [
+    "plugin/",
+    "public/",
+    "docs/screenshot.png",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "mocha",
     "lint": "eslint ."
@@ -15,7 +23,17 @@
   ],
   "signalk": {
     "displayName": "Sailing Logbook",
-    "appIcon": "logo.svg"
+    "appIcon": "logo.svg",
+    "screenshots": [
+      "docs/screenshot.png"
+    ],
+    "requires": [
+      "signalk-to-influxdb"
+    ],
+    "recommends": [
+      "signalk-derived-engine-state",
+      "signalk-alternator-engine-on"
+    ]
   },
   "signalk-plugin-enabled-by-default": false,
   "author": "Johan Solve",
@@ -36,10 +54,5 @@
     "eslint": "^9.0.0",
     "globals": "^17.0.0",
     "mocha": "^11.0.0"
-  },
-  "comment": "recommends: install one of these to provide propulsion.<n>.state for the motoring/sailing distinction",
-  "recommends": [
-    "signalk-derived-engine-state",
-    "signalk-alternator-engine-on"
-  ]
+  }
 }

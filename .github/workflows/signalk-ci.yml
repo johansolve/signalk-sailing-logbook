@@ -1,0 +1,17 @@
+name: SignalK Plugin CI
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+jobs:
+  test:
+    uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@master
+    with:
+      # node:sqlite (used for storage) needs Node >= 22.5, so the Venus OS
+      # armv7 platform (Node 20) can't run this plugin — skip it rather than
+      # report a red indicator for a platform we don't support.
+      enable-armv7: false
+      # Keep our ESLint check in CI (the reusable workflow runs npm test but
+      # not the lint script by itself).
+      format-check-command: 'npm run lint'

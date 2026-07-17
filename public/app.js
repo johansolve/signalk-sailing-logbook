@@ -6,9 +6,14 @@ const READ = '/signalk/v1/api/sailing-logbook'
 const ADMIN = '/plugins/signalk-sailing-logbook'
 
 // ---- i18n ----------------------------------------------------------------
-// Language: ?lang= override, else browser preference, else English.
+// Language: ?lang= override, else browser preference, else English. Adding a
+// language is data-driven: drop in a string set below (with its `locale`, and
+// `pctSpace: true` if the language puts a space before the percent sign) and the
+// ?lang override and browser detection pick it up. The report is localised
+// separately in plugin/lib/report.js.
 const STR = {
   en: {
+    locale: 'en-GB',
     title: 'Logbook', scanHistory: 'Scan history',
     scanHint: 'Scans the InfluxDB history and creates any trips that are missing. Overlapping trips are skipped. Requires admin login.',
     from: 'From', to: 'To', scan: 'Scan',
@@ -27,7 +32,7 @@ const STR = {
     tack: 'Tack', gybe: 'Gybe',
     gybeSing: 'gybe', gybePlur: 'gybes', tackSing: 'tack', tackPlur: 'tacks',
     andWord: 'and', noManeuvers: 'No gybes or tacks',
-    copyReport: 'Copy logbook entry', deleteTrip: 'Delete trip',
+    copyReport: 'Show logbook entry', copy: 'Copy', deleteTrip: 'Delete trip',
     removeManeuver: 'Remove this maneuver', stbd: 'S', port: 'P', motor: 'motor',
     motorHour: 'Motor', motorTime: 'engine',
     couldNotLoadTrips: 'Could not load trips: ', couldNotLoadTrip: 'Could not load trip: ',
@@ -39,6 +44,7 @@ const STR = {
     scanDone: (c, f, s) => `Done: ${c} new trips (${f} found, ${s} samples).`
   },
   sv: {
+    locale: 'sv-SE', pctSpace: true,
     title: 'Loggbok', scanHistory: 'Skanna historik',
     scanHint: 'Skannar InfluxDB-historiken och skapar trips som saknas. Överlappande trips hoppas över. Kräver admin-inloggning.',
     from: 'Från', to: 'Till', scan: 'Skanna',
@@ -57,7 +63,7 @@ const STR = {
     tack: 'Slag', gybe: 'Gipp',
     gybeSing: 'gipp', gybePlur: 'gippar', tackSing: 'slag', tackPlur: 'slag',
     andWord: 'och', noManeuvers: 'Inga gippar eller slag',
-    copyReport: 'Kopiera loggbokstext', deleteTrip: 'Ta bort trip',
+    copyReport: 'Visa loggbokstext', copy: 'Kopiera', deleteTrip: 'Ta bort trip',
     removeManeuver: 'Ta bort manövern', stbd: 'SB', port: 'BB', motor: 'motor',
     motorHour: 'Motor', motorTime: 'motor',
     couldNotLoadTrips: 'Kunde inte hämta trips: ', couldNotLoadTrip: 'Kunde inte hämta trip: ',
@@ -78,7 +84,7 @@ const LANG = (() => {
   const nav = (navigator.language || 'en').slice(0, 2).toLowerCase()
   return STR[nav] ? nav : 'en'
 })()
-const LOCALE = LANG === 'sv' ? 'sv-SE' : 'en-GB'
+const LOCALE = STR[LANG].locale || LANG
 const t = (k) => STR[LANG][k]
 
 const MS_PER_KNOT = 0.514444
@@ -134,7 +140,9 @@ function placeOf (tr, which) {
   return tr[`${which}_place_manual`] || tr[`${which}_place`] || ''
 }
 function pct (v) {
-  return LANG === 'sv' ? `${n(v)} %` : `${n(v)}%`
+  // Some languages put a space before the percent sign (Swedish); a language
+  // opts in with pctSpace in its string set, otherwise the compact form is used.
+  return STR[LANG].pctSpace ? `${n(v)} %` : `${n(v)}%`
 }
 // Motoring time of the total, shown for any trip that ran the engine at all.
 function engineFrag (tr) {
@@ -323,7 +331,10 @@ function renderDetail (data) {
       <button id="copy-report">${t('copyReport')}</button>
       <button id="delete-trip" class="danger">${t('deleteTrip')}</button>
     </div>
-    <pre id="report-preview" class="report" hidden></pre>`
+    <div id="report-wrap" class="report-wrap" hidden>
+      <button id="report-copy" class="report-copy">${t('copy')}</button>
+      <pre id="report-preview" class="report"></pre>
+    </div>`
 
   // Remember which sides currently have a named (registry) place, so emptying one
   // and saving is understood as a delete rather than a no-op.
@@ -331,6 +342,10 @@ function renderDetail (data) {
   $('#save-places').addEventListener('click', () => savePlaces(tr.id, named))
   $('#save-notes').addEventListener('click', () => saveNotes(tr.id))
   $('#copy-report').addEventListener('click', () => copyReport(tr.id))
+  // The report box's own copy button re-copies the shown text (textContent
+  // reconstructs the raw report: the nowrap spans and HTML escaping render back
+  // to the exact original).
+  $('#report-copy').addEventListener('click', () => copyToClipboard($('#report-preview').textContent))
   $('#delete-trip').addEventListener('click', () => deleteTrip(tr.id))
   document.querySelectorAll('.ev-del').forEach((b) => {
     b.addEventListener('click', () => deleteEvent(b.getAttribute('data-event'), tr.id))
@@ -812,6 +827,19 @@ function reportHtml (text) {
   ).join('\n')
 }
 
+// Write text to the clipboard, reporting success or the manual-copy fallback.
+// The Clipboard API needs a secure context (https or localhost); on a plain-http
+// LAN address it may be unavailable, so this degrades to the "copy manually"
+// hint (the report stays visible in its box for that).
+async function copyToClipboard (text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    setStatus(t('copied'))
+  } catch (e) {
+    setStatus(t('copyManually'), true)
+  }
+}
+
 async function copyReport (id) {
   try {
     const r = await fetch(`${READ}/trips/${id}/report?lang=${LANG}`)
@@ -819,15 +847,9 @@ async function copyReport (id) {
       throw new Error(`HTTP ${r.status}`)
     }
     const text = await r.text()
-    const pre = $('#report-preview')
-    pre.innerHTML = reportHtml(text)
-    pre.hidden = false
-    try {
-      await navigator.clipboard.writeText(text)
-      setStatus(t('copied'))
-    } catch (e) {
-      setStatus(t('copyManually'), true)
-    }
+    $('#report-preview').innerHTML = reportHtml(text)
+    $('#report-wrap').hidden = false
+    copyToClipboard(text)
   } catch (e) {
     setStatus(t('couldNotFetchReport') + e.message, true)
   }
