@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS trips (
   max_stw            REAL,
   engine_share       REAL,
   notes              TEXT,
+  hourly_json        TEXT,
   status             TEXT NOT NULL DEFAULT 'active',
   origin             TEXT NOT NULL DEFAULT 'live'
 );
@@ -68,7 +69,7 @@ function open (filePath) {
   // Migrations for columns added to existing databases. A "duplicate column"
   // error means the column is already in SCHEMA (fresh DB) and is benign;
   // anything else (locked, corrupt) must surface, not hide.
-  for (const col of ['engine_share REAL', 'max_stw REAL', 'notes TEXT']) {
+  for (const col of ['engine_share REAL', 'max_stw REAL', 'notes TEXT', 'hourly_json TEXT']) {
     try {
       db.exec(`ALTER TABLE trips ADD COLUMN ${col}`)
     } catch (e) {
@@ -99,6 +100,8 @@ function open (filePath) {
     ),
     setMaxStw: db.prepare('UPDATE trips SET max_stw = @max_stw WHERE id = @id'),
     setNotes: db.prepare('UPDATE trips SET notes = @notes WHERE id = @id'),
+    setHourlyJson: db.prepare('UPDATE trips SET hourly_json = @json WHERE id = @id'),
+    clearHourly: db.prepare('UPDATE trips SET hourly_json = NULL'),
     completeTripWindows: db.prepare(
       "SELECT id, start_time, stop_time FROM trips " +
         "WHERE status = 'complete' AND stop_time IS NOT NULL"
@@ -189,6 +192,17 @@ function open (filePath) {
 
     setNotes (id, notes) {
       stmts.setNotes.run({ id, notes: notes != null ? notes : null })
+    },
+
+    // Persistent cache of a completed trip's computed hourly stats (immutable, so
+    // safe to store): a JSON blob, recomputed only if missing. Cleared per-trip on
+    // delete (row goes) and wholesale when engine state is re-derived.
+    setHourlyJson (id, json) {
+      stmts.setHourlyJson.run({ id, json: json != null ? json : null })
+    },
+
+    clearHourlyCache () {
+      stmts.clearHourly.run()
     },
 
     setGeocode (id, { startPlace, stopPlace }) {

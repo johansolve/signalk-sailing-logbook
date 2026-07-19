@@ -411,11 +411,14 @@ module.exports = function (app) {
     const samePlace =
       trip.start_lat != null && trip.stop_lat != null &&
       haversine(trip.start_lat, trip.start_lon, trip.stop_lat, trip.stop_lon) <= placeRadiusM()
-    return Object.assign({}, trip, {
+    const out = Object.assign({}, trip, {
       start_place_manual: startName != null ? startName : (trip.start_lat == null ? trip.start_place_manual : null),
       stop_place_manual: stopName != null ? stopName : (trip.stop_lat == null ? trip.stop_place_manual : null),
       same_place: samePlace
     })
+    // The hourly-stats cache blob is internal; never ship it in an API response.
+    delete out.hourly_json
+    return out
   }
 
   // One-time seed: turn the manual names that predate the registry into places,
@@ -526,6 +529,9 @@ module.exports = function (app) {
     if (!db) {
       return
     }
+    // The hourly cache carries per-hour motor badges derived from engine state;
+    // drop it so it re-annotates with the recomputed state on next view.
+    db.clearHourlyCache()
     db.setUserVersion(4)
     app.debug(`engine_share backfill done (${trips.length} trips)`)
   }
@@ -860,21 +866,45 @@ module.exports = function (app) {
     return { trip: withPlaces(trip), events }
   }
 
-  async function detailWithStats (id) {
-    const base = tripDetail(id)
-    if (!base) {
-      return null
+  // Compute a trip's hourly stats from InfluxDB, annotated with per-hour engine
+  // state. Empty for an active trip (window still growing), an error, or no data.
+  async function computeHourly (trip) {
+    if (!trip.stop_time) {
+      return []
     }
-    let hourly = []
-    if (base.trip.stop_time) {
+    try {
+      const hourly = await influx.hourlyStats(trip.start_time, trip.stop_time)
+      await annotateHourlyEngine(hourly, trip.start_time, trip.stop_time)
+      return hourly
+    } catch (e) {
+      app.error(`hourlyStats failed: ${e.message}`)
+      return []
+    }
+  }
+
+  // Hourly stats with a persistent cache. A completed trip's window is in the
+  // past, so its stats never change: compute once, store the JSON on the trip row
+  // and read it back on every later detail/report load — no InfluxDB round-trip,
+  // and it survives a restart (unlike an in-memory cache). `trip` must be the raw
+  // row (carries hourly_json + stop_time), not the place-overlaid view.
+  async function hourlyFor (trip) {
+    if (!trip.stop_time) {
+      return computeHourly(trip)
+    }
+    if (trip.hourly_json) {
       try {
-        hourly = await influx.hourlyStats(base.trip.start_time, base.trip.stop_time)
-        await annotateHourlyEngine(hourly, base.trip.start_time, base.trip.stop_time)
+        return JSON.parse(trip.hourly_json)
       } catch (e) {
-        app.error(`hourlyStats failed: ${e.message}`)
+        // Corrupt cache: fall through and recompute.
       }
     }
-    return { trip: base.trip, events: base.events, hourly }
+    const hourly = await computeHourly(trip)
+    // Only cache a real result — an empty array may be a transient InfluxDB error,
+    // not a genuinely dataless trip, and must not be frozen in.
+    if (db && hourly.length) {
+      db.setHourlyJson(trip.id, JSON.stringify(hourly))
+    }
+    return hourly
   }
 
   // Mark each hourly bucket that was mostly under engine, so the report and
@@ -931,20 +961,44 @@ module.exports = function (app) {
     const id = parseInt(req.params.id, 10)
     return Number.isInteger(id) && id > 0 ? id : null
   }
-  async function detailHandler (req, res) {
+  // The trip row and its maneuvers, straight from SQLite — no InfluxDB, so it
+  // returns in milliseconds. The expensive hourly stats load separately (see
+  // hourlyHandler), letting the webapp render the header and map immediately.
+  function detailHandler (req, res) {
     const id = tripIdParam(req)
     if (id == null) {
       return res.status(400).json({ error: 'invalid id' })
     }
+    if (dbGone(res)) {
+      return
+    }
+    const base = tripDetail(id)
+    if (!base) {
+      return res.status(404).json({ error: 'not found' })
+    }
+    res.json({
+      trip: Object.assign({}, base.trip, { motor: motorTrip(base.trip) }),
+      events: base.events
+    })
+  }
+  // The trip's hourly statistics, the expensive part of the detail. Served on its
+  // own so the rest of the view isn't held up by it, and cached per completed trip.
+  async function hourlyHandler (req, res) {
+    const id = tripIdParam(req)
+    if (id == null) {
+      return res.status(400).json({ error: 'invalid id' })
+    }
+    if (dbGone(res)) {
+      return
+    }
+    const trip = db.getTrip(id)
+    if (!trip) {
+      return res.status(404).json({ error: 'not found' })
+    }
     try {
-      const data = await detailWithStats(id)
-      if (!data) {
-        return res.status(404).json({ error: 'not found' })
-      }
-      data.trip = Object.assign({}, data.trip, { motor: motorTrip(data.trip) })
-      res.json(data)
+      res.json({ hourly: await hourlyFor(trip) })
     } catch (e) {
-      app.error(`detail failed: ${e.message}`)
+      app.error(`hourly failed: ${e.message}`)
       res.status(500).json({ error: e.message })
     }
   }
@@ -989,15 +1043,20 @@ module.exports = function (app) {
     if (id == null) {
       return res.status(400).send('invalid id')
     }
+    if (dbGone(res)) {
+      return
+    }
+    const base = tripDetail(id)
+    if (!base) {
+      return res.status(404).send('not found')
+    }
     try {
-      const data = await detailWithStats(id)
-      if (!data) {
-        return res.status(404).send('not found')
-      }
+      // hourlyFor needs the raw row (hourly_json); base.trip is the stripped view.
+      const hourly = await hourlyFor(db.getTrip(id))
       const requested = typeof req.query.lang === 'string' ? req.query.lang : ''
       const lang = report.languages.includes(requested) ? requested : 'en'
-      const motor = motorTrip(data.trip)
-      res.type('text/plain; charset=utf-8').send(report.buildReport(data.trip, data.events, data.hourly, lang, motor))
+      const motor = motorTrip(base.trip)
+      res.type('text/plain; charset=utf-8').send(report.buildReport(base.trip, base.events, hourly, lang, motor))
     } catch (e) {
       app.error(`report failed: ${e.message}`)
       res.status(500).send(e.message)
@@ -1010,6 +1069,7 @@ module.exports = function (app) {
   plugin.signalKApiRoutes = function (router) {
     router.get('/sailing-logbook/trips', listHandler)
     router.get('/sailing-logbook/trips/:id', detailHandler)
+    router.get('/sailing-logbook/trips/:id/hourly', hourlyHandler)
     router.get('/sailing-logbook/trips/:id/report', reportHandler)
     router.get('/sailing-logbook/trips/:id/track', trackHandler)
     return router
@@ -1020,6 +1080,7 @@ module.exports = function (app) {
   plugin.registerWithRouter = function (router) {
     router.get('/trips', listHandler)
     router.get('/trips/:id', detailHandler)
+    router.get('/trips/:id/hourly', hourlyHandler)
     router.get('/trips/:id/report', reportHandler)
     router.get('/trips/:id/track', trackHandler)
 

@@ -104,6 +104,9 @@ let scrubDot = null
 let scrubEvents = null
 let scrubFields = []
 let scrubHasMotor = false
+// The trip whose detail is currently open, so a late async response (hourly
+// stats) for a trip we've navigated away from can be dropped.
+let currentDetailId = null
 
 function toKnots (ms) {
   return ms == null ? null : ms / MS_PER_KNOT
@@ -205,14 +208,33 @@ function renderList (trips) {
 
 async function loadDetail (id) {
   showView('detail')
+  currentDetailId = id
   $('#detail').innerHTML = `<p class="hint">${t('loading')}</p>`
   try {
+    // The cheap part (trip row + maneuvers, straight from SQLite) renders the
+    // header, map and controls at once; the expensive hourly stats and the track
+    // load separately so the page isn't held up by either.
     const data = await getJSON(`${READ}/trips/${id}`)
     renderDetail(data)
     setStatus('')
+    loadHourly(id)
   } catch (e) {
     $('#detail').innerHTML = ''
     setStatus(t('couldNotLoadTrip') + e.message, true)
+  }
+}
+
+// Load the hourly stats separately and fill the weather table when they arrive.
+// A late response for a trip we've since navigated away from is dropped.
+async function loadHourly (id) {
+  let hourly = []
+  try {
+    hourly = (await getJSON(`${READ}/trips/${id}/hourly`)).hourly || []
+  } catch (e) {
+    hourly = []
+  }
+  if (id === currentDetailId) {
+    fillHourly(hourly)
   }
 }
 
@@ -225,29 +247,6 @@ function cell (mean, range) {
 function renderDetail (data) {
   const tr = data.trip
   const el = $('#detail')
-  const rows = (data.hourly || []).map((h) => {
-    const tws = h.tws || {}
-    const stw = h.stw || {}
-    const twd = h.twd || {}
-    const twa = h.twa || {}
-    const awa = h.awa || {}
-    const heel = h.heel || {}
-    // Under engine the pointing angles are meaningless, so a single Motor badge
-    // spans the TWA and AWA columns for the hour.
-    const twaAwa = h.motor
-      ? `<td class="motor-cell" colspan="2"><span class="tag">${t('motorHour')}</span></td>`
-      : `${cell(n(toDeg(twa.mean)) + sideLetter(twa.side), `${n(toDeg(twa.p10))}–${n(toDeg(twa.p90))}`)}
-         ${cell(n(toDeg(awa.mean)) + sideLetter(awa.side), `${n(toDeg(awa.p10))}–${n(toDeg(awa.p90))}`)}`
-    return `<tr>
-      <td>${fmtTime(h.time)}</td>
-      ${cell(n(toKnots(stw.mean), 1), `${n(toKnots(stw.p10), 1)}–${n(toKnots(stw.p90), 1)}`)}
-      ${cell(n(tws.mean, 1), `${n(tws.p10, 1)}–${n(tws.p90, 1)}`)}
-      ${cell(twd.mean != null ? n(toDeg(twd.mean)) : '–', twd.std != null ? '±' + n(toDeg(twd.std)) : '')}
-      ${twaAwa}
-      ${cell(n(toDeg(heel.mean)), `${n(toDeg(heel.p10))}–${n(toDeg(heel.p90))}`)}
-    </tr>`
-  }).join('')
-
   const events = (data.events || []).map((e, i) => `
     <li class="ev-item" data-idx="${i}">
         <span class="ev-time">${fmtTime(e.time)}</span>
@@ -306,20 +305,7 @@ function renderDetail (data) {
 
     <div class="weather">
       <h3>${t('hourlyWeather')}</h3>
-      ${rows ? `<div class="table-scroll"><table class="hourly">
-        <thead><tr>
-          <th>${t('hr')}</th>
-          <th class="num">STW<br><small>kn</small></th>
-          <th class="num">TWS<br><small>m/s</small></th>
-          <th class="num">TWD<br><small>°</small></th>
-          <th class="num">TWA<br><small>°</small></th>
-          <th class="num">AWA<br><small>°</small></th>
-          <th class="num">${t('heel')}<br><small>°</small></th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table></div>
-      <p class="unit-note">${t('unitNote')}</p>`
-        : `<p class="hint">${t('noWeather')}</p>`}
+      <div id="hourly-body"><p class="hint">${t('loading')}</p></div>
     </div>
 
     <div class="events">
@@ -378,6 +364,58 @@ function maneuverSummary (gybes, tacks) {
     parts.push(`${tacks} ${tacks === 1 ? t('tackSing') : t('tackPlur')}`)
   }
   return parts.join(` ${t('andWord')} `)
+}
+
+// Build the hourly weather table rows. Extracted from renderDetail so the stats
+// can load and render on their own (see loadHourly), separate from the rest.
+function hourlyRowsHtml (hourly) {
+  return (hourly || []).map((h) => {
+    const tws = h.tws || {}
+    const stw = h.stw || {}
+    const twd = h.twd || {}
+    const twa = h.twa || {}
+    const awa = h.awa || {}
+    const heel = h.heel || {}
+    // Under engine the pointing angles are meaningless, so a single Motor badge
+    // spans the TWA and AWA columns for the hour.
+    const twaAwa = h.motor
+      ? `<td class="motor-cell" colspan="2"><span class="tag">${t('motorHour')}</span></td>`
+      : `${cell(n(toDeg(twa.mean)) + sideLetter(twa.side), `${n(toDeg(twa.p10))}–${n(toDeg(twa.p90))}`)}
+         ${cell(n(toDeg(awa.mean)) + sideLetter(awa.side), `${n(toDeg(awa.p10))}–${n(toDeg(awa.p90))}`)}`
+    return `<tr>
+      <td>${fmtTime(h.time)}</td>
+      ${cell(n(toKnots(stw.mean), 1), `${n(toKnots(stw.p10), 1)}–${n(toKnots(stw.p90), 1)}`)}
+      ${cell(n(tws.mean, 1), `${n(tws.p10, 1)}–${n(tws.p90, 1)}`)}
+      ${cell(twd.mean != null ? n(toDeg(twd.mean)) : '–', twd.std != null ? '±' + n(toDeg(twd.std)) : '')}
+      ${twaAwa}
+      ${cell(n(toDeg(heel.mean)), `${n(toDeg(heel.p10))}–${n(toDeg(heel.p90))}`)}
+    </tr>`
+  }).join('')
+}
+
+// Fill the weather section once the hourly stats arrive: the full table, or the
+// "no weather" note for a trip with no end or no data.
+function fillHourly (hourly) {
+  const host = $('#hourly-body')
+  if (!host) {
+    return
+  }
+  const rows = hourlyRowsHtml(hourly)
+  host.innerHTML = rows
+    ? `<div class="table-scroll"><table class="hourly">
+        <thead><tr>
+          <th>${t('hr')}</th>
+          <th class="num">STW<br><small>kn</small></th>
+          <th class="num">TWS<br><small>m/s</small></th>
+          <th class="num">TWD<br><small>°</small></th>
+          <th class="num">TWA<br><small>°</small></th>
+          <th class="num">AWA<br><small>°</small></th>
+          <th class="num">${t('heel')}<br><small>°</small></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <p class="unit-note">${t('unitNote')}</p>`
+    : `<p class="hint">${t('noWeather')}</p>`
 }
 
 // ---- track map -----------------------------------------------------------

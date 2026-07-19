@@ -27,8 +27,8 @@ app lists your trips and produces a ready-to-paste logbook entry for each one.
     start/end) drop harbour and mooring turns made under engine,
   - classified by how the boat crossed the wind: over the stern → gybe, over the
     bow → tack.
-- **Hourly statistics** from InfluxDB over each trip's exact time window, no data
-  duplicated into the plugin: TWS (m/s), STW (kn), TWD (circular mean ± angular
+- **Hourly statistics** from InfluxDB over each trip's exact time window, derived
+  on demand and cached per completed trip: TWS (m/s), STW (kn), TWD (circular mean ± angular
   deviation), TWA, AWA and heel (degrees), each as mean with a p10–p90 range
   (the "significant" min/max, with raw extremes filtered out). TWA/AWA also show
   the dominant tack side.
@@ -124,7 +124,8 @@ admin **Webapps** menu.
 Read (honour readonly access), under `/signalk/v1/api/sailing-logbook`:
 
 - `GET /trips` — list trips with tack/gybe counts
-- `GET /trips/:id` — trip detail with hourly statistics
+- `GET /trips/:id` — trip detail (trip row and maneuvers)
+- `GET /trips/:id/hourly` — hourly wind and heel statistics (cached per completed trip)
 - `GET /trips/:id/track` — downsampled position+SOG track for the map
 - `GET /trips/:id/report?lang=en|sv` — plain-text logbook entry
 
@@ -138,11 +139,17 @@ Admin only, under `/plugins/signalk-sailing-logbook`:
 
 ## How it works
 
-The plugin persists only *events* (trip start/stop, tack/gybe markers with their
-position) to SQLite. All hourly statistics are derived from InfluxDB on demand
-over the trip's `[start, stop]` window, so nothing is duplicated and the numbers
-are never stale. The queries are time-bounded, which also excludes the occasional
-mis-timestamped GPS point some NMEA sources emit.
+The plugin persists *events* (trip start/stop, tack/gybe markers with their
+position) to SQLite; the raw sensor history stays in InfluxDB. Hourly statistics
+are derived from InfluxDB on demand over the trip's `[start, stop]` window rather
+than duplicated in. For a completed trip that window is in the past, so the
+computed result is cached on the trip row and reused on every later load — never
+recomputed, never stale. The queries are time-bounded, which also excludes the
+occasional mis-timestamped GPS point some NMEA sources emit.
+
+The detail view fetches the trip, the map track and the hourly statistics as
+separate requests, so the page renders immediately from SQLite while the InfluxDB
+work loads alongside rather than holding it up.
 
 Live detection feeds the state machine one sample at a time using server receive
 time; retrospective scanning replays the InfluxDB history through the exact same

@@ -93,9 +93,14 @@ function makeInflux (config) {
     // by tacking from one side to the other.
     async hourlyStats (startMs, stopMs) {
       const w = window(startMs, stopMs)
+      // p10/p90 are the "significant" min/max with the raw extremes filtered out.
+      // These run over the raw samples: downsampling to coarser means first was
+      // tried for speed, but a wraparound-safe angle mean (abs / sin·cos) must be
+      // taken per raw sample, which needs the same raw scan — no real saving. The
+      // load win comes instead from caching a completed trip's result (see
+      // index.js hourlyFor) and loading it separately from the rest of the detail.
       const plainStat = (measurement) =>
-        `SELECT mean("value") AS mean, percentile("value",10) AS p10, ` +
-        `percentile("value",90) AS p90, max("value") AS max ` +
+        `SELECT mean("value") AS mean, percentile("value",10) AS p10, percentile("value",90) AS p90 ` +
         `FROM "${quoteMeasurement(measurement)}" WHERE ${w} GROUP BY time(1h) fill(none)`
       const absStat = (measurement) =>
         `SELECT mean(a) AS mean, percentile(a,10) AS p10, percentile(a,90) AS p90 ` +
@@ -139,7 +144,6 @@ function makeInflux (config) {
             mean: row.mean,
             p10: row.p10,
             p90: row.p90,
-            max: row.max != null ? row.max : undefined,
             side: row.side != null ? row.side : undefined
           }
         })

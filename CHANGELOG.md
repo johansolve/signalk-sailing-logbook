@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-19
+
+### Changed
+- **Much faster detail and report loading.** The detail view now loads in parts:
+  the trip and its maneuvers render immediately from SQLite while the map and the
+  hourly weather load separately, so the page appears at once instead of waiting
+  on InfluxDB. The hourly statistics of a completed trip are computed once and
+  cached on the trip row (immutable, so never stale), making re-opens and the
+  logbook entry near-instant and resilient to a slow or briefly unreachable
+  InfluxDB.
+
+### Fixed
+- A trip that sailed for over a day before a brief engine use no longer reads as
+  fully motoring (engine-state seeding no longer discards a valid old seed).
+
 ## [0.6.0] - 2026-07-17
 
 ### Added
