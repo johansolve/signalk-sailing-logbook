@@ -90,3 +90,52 @@ describe('awaSeries (maneuver fallback)', function () {
     }
   })
 })
+
+describe('engineStateSeries', function () {
+  const influx = makeInflux({ host: 'x', port: 8086, database: 'db' })
+
+  it('seeds an old pre-window state instead of back-filling a mid-trip start', async function () {
+    // The Flakfortet→Rungsted bug: after >24 h of sailing the last engine
+    // transition ('stopped') long predates the trip, and a single mid-trip
+    // 'started' must not be projected back across the whole window (that read a
+    // sail as 100 % motoring). result[0] is the seed, result[1] the in-window rows.
+    const restore = stubFetch([
+      { series: [{ columns: ['time', 'v'], values: [[1000, 'stopped']] }] },
+      { series: [{ columns: ['time', 'v'], values: [[190000, 'started']] }] }
+    ])
+    try {
+      assert.deepEqual(
+        await influx.engineStateSeries(100000, 200000),
+        [[100000, 'stopped'], [190000, 'started'], [200000, 'started']]
+      )
+    } finally {
+      restore()
+    }
+  })
+
+  it('with no prior state, seeds the opposite of the first in-window transition', async function () {
+    // Every in-window row is a transition, so a 'started' at 150000 means it was
+    // 'stopped' from the trip start until then.
+    const restore = stubFetch([
+      { series: [] },
+      { series: [{ columns: ['time', 'v'], values: [[150000, 'started']] }] }
+    ])
+    try {
+      assert.deepEqual(
+        await influx.engineStateSeries(100000, 200000),
+        [[100000, 'stopped'], [150000, 'started'], [200000, 'started']]
+      )
+    } finally {
+      restore()
+    }
+  })
+
+  it('returns [] when there is no state anywhere (engine unknown)', async function () {
+    const restore = stubFetch([{ series: [] }, { series: [] }])
+    try {
+      assert.deepEqual(await influx.engineStateSeries(100000, 200000), [])
+    } finally {
+      restore()
+    }
+  })
+})

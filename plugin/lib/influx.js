@@ -224,30 +224,28 @@ function makeInflux (config) {
         return []
       }
       const seedRow = rowsToObjects(results[0])[0]
-      // A seed older than this predates the plugin running for this stretch, so
-      // it says nothing about the trip; don't let one stale value shadow the
-      // alternator fallback for a whole trip.
-      const seedMaxAgeMs = 24 * 3600 * 1000
-      const seedFresh =
-        seedRow != null &&
-        seedRow.v != null &&
-        seedRow.time != null &&
-        startMs - seedRow.time <= seedMaxAgeMs
       // Drop any point exactly at startMs; the seeded left bracket covers it.
       const inWindow = results[1].values
         .map((v) => [v[0], v[1]])
         .filter((p) => p[1] != null && p[0] > startMs)
       let leftState
-      if (seedFresh) {
+      if (seedRow != null && seedRow.v != null) {
+        // The publisher emits only on transitions, so its last value before the
+        // window is the state at startMs however old it is — a step function holds
+        // until it next changes, and a boat can genuinely sit 'stopped' for days
+        // of sailing. No age cutoff: an old seed is still the correct seed.
+        // Discarding it back-projected a single mid-trip 'started' across a whole
+        // sail (the Flakfortet→Rungsted false positive: engine_share == 1.0).
         leftState = seedRow.v
       } else if (inWindow.length) {
-        // No trustworthy seed, but there are transitions inside the window, so the
-        // plugin was publishing during the trip: assume the first in-window state
-        // held just before it.
-        leftState = inWindow[0][1]
+        // No prior state at all: the plugin only began publishing inside this
+        // trip. Every in-window row is a transition, so the state just before the
+        // first one was its opposite (a 'started' row means it was 'stopped'
+        // until then). Assuming the first in-window state held before it would
+        // over-count a trip that began under sail.
+        leftState = inWindow[0][1] === 'started' ? 'stopped' : 'started'
       } else {
-        // No trustworthy state for this window -> caller falls back to the
-        // alternator/current derivation.
+        // No state anywhere for this window -> caller treats the engine as unknown.
         return []
       }
       const series = [[startMs, leftState], ...inWindow]

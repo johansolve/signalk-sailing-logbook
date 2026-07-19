@@ -484,6 +484,52 @@ module.exports = function (app) {
     app.debug(`max_stw backfill done (${ok} of ${trips.length} trips)`)
   }
 
+  // One-time re-classification of engine_share for every complete trip, using the
+  // corrected engineStateSeries seeding (a valid but old 'stopped' seed is no
+  // longer discarded, so a single mid-trip 'started' is no longer back-projected
+  // across a whole sail). Fixes trips completed under the old logic, e.g. the
+  // Flakfortet→Rungsted sail that read as 100 % motoring. Guarded by user_version
+  // so it runs once; runs in the background — start() must not block on it.
+  async function backfillEngineShareOnce () {
+    if (db.userVersion() >= 4) {
+      return
+    }
+    const trips = db.completeTripWindows()
+    if (!trips.length) {
+      db.setUserVersion(4)
+      return
+    }
+    // engineStateSeries swallows a query failure as "no data", so it can't tell a
+    // real dataless trip from an InfluxDB outage. Probe once with a query that
+    // does throw, so an outage defers the whole backfill instead of nulling every
+    // trip's share and burning the guard.
+    try {
+      await influx.tripAggregate(trips[0].start_time, trips[0].stop_time)
+    } catch (e) {
+      app.debug('engine_share backfill deferred: InfluxDB unreachable, will retry')
+      return
+    }
+    for (const t of trips) {
+      if (!db) {
+        return
+      }
+      const engine = await analyzeTripEngine(t.start_time, t.stop_time)
+      // Only write a real share, matching the live paths. analyzeTripEngine
+      // swallows a query error as share=null, so without this guard a mid-run
+      // InfluxDB hiccup (after the probe passed) would null out later trips'
+      // shares and then burn the guard. A null result is a genuinely dataless
+      // window, which was already null, so skipping it never drops a correction.
+      if (db && engine.share != null) {
+        db.setEngineShare(t.id, engine.share)
+      }
+    }
+    if (!db) {
+      return
+    }
+    db.setUserVersion(4)
+    app.debug(`engine_share backfill done (${trips.length} trips)`)
+  }
+
   // A maneuver is an "edge" maneuver (harbour departure/arrival, to be ignored)
   // if it is close in time OR in distance to the trip start or end. The end
   // checks are null-safe so this also works on a still-active trip (start only).
@@ -724,8 +770,11 @@ module.exports = function (app) {
       paths: { engineState: options.engineStatePath || 'propulsion.0.state' }
     })
 
-    // Backfill max_stw for pre-existing trips (background, never blocks start).
-    backfillMaxStwOnce().catch((e) => app.debug(`max_stw backfill error: ${e.message}`))
+    // Backfill max_stw then re-classify engine_share for pre-existing trips
+    // (background, never blocks start). Chained so they don't race on user_version.
+    backfillMaxStwOnce()
+      .then(() => backfillEngineShareOnce())
+      .catch((e) => app.debug(`backfill error: ${e.message}`))
 
     // Resume an open trip left behind by a restart.
     const active = db.getActiveTrip()
