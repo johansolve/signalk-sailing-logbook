@@ -30,6 +30,17 @@ const STR = {
     playbackNoTrack: 'None of those trips has a logged track.',
     playbackDone: 'Playback finished.', loadingTrack: 'Loading track…',
     playbackNoMap: 'The map library did not load.',
+    exportVideoPanel: 'Save as video', exportVideo: 'Save as video', cancel: 'Cancel',
+    exportHint: 'Re-renders the passage frame by frame into an MP4, waiting for every chart tile, so the film is the same however slow the connection is.',
+    exportFetching: 'Fetching tracks…',
+    exportUnsupported: 'This browser cannot encode video (needs WebCodecs — try Chrome or Edge, or Safari 17 and later).',
+    exportInsecure: 'Video export needs a secure connection. Open the logbook over its https address rather than the local http one.',
+    exportReady: 'Video ready — tap Save to keep it.',
+    saveVideo: 'Save video',
+    exportShared: 'Saved.',
+    exportRendering: (s) => `Rendering ${s} s of video…`,
+    exportDone: (mb) => `Done — ${mb} MB saved to your downloads.`,
+    size_portrait: 'Portrait', size_square: 'Square', size_landscape: 'Landscape',
     underWay: '(under way)', loading: 'Loading…', unknown: 'Unknown',
     startPlace: 'Start place', endPlace: 'End place', place: 'Place', savePlaces: 'Save places',
     placeHint: 'A named place is reused for every trip starting or ending within a 250 m radius. Clear a field and save to remove its name.',
@@ -72,6 +83,17 @@ const STR = {
     playbackNoTrack: 'Ingen av tripsen har något loggat spår.',
     playbackDone: 'Uppspelningen är klar.', loadingTrack: 'Hämtar spår…',
     playbackNoMap: 'Kartbiblioteket kunde inte laddas.',
+    exportVideoPanel: 'Spara som video', exportVideo: 'Spara som video', cancel: 'Avbryt',
+    exportHint: 'Ritar om seglatsen bildruta för bildruta till en MP4 och väntar in varje sjökortsbricka, så filmen blir likadan hur långsam uppkopplingen än är.',
+    exportFetching: 'Hämtar spår…',
+    exportUnsupported: 'Den här webbläsaren kan inte koda video (kräver WebCodecs — prova Chrome eller Edge, eller Safari 17 och senare).',
+    exportInsecure: 'Videoexport kräver säker anslutning. Öppna loggboken via https-adressen istället för den lokala http-adressen.',
+    exportReady: 'Videon är klar — tryck Spara för att behålla den.',
+    saveVideo: 'Spara video',
+    exportShared: 'Sparad.',
+    exportRendering: (s) => `Renderar ${s} s video…`,
+    exportDone: (mb) => `Klart — ${mb} MB sparad bland dina nedladdningar.`,
+    size_portrait: 'Porträtt', size_square: 'Kvadrat', size_landscape: 'Liggande',
     underWay: '(pågår)', loading: 'Laddar…', unknown: 'Okänd',
     startPlace: 'Startplats', endPlace: 'Slutplats', place: 'Plats', savePlaces: 'Spara platser',
     placeHint: 'Ett platsnamn återanvänds för alla trips som startar eller slutar inom 250 m radie. Töm ett fält och spara för att ta bort namnet.',
@@ -1094,6 +1116,11 @@ const PB_SEC_PER_HOUR = 2
 const PB_PORT_PAUSE_MS = 1000
 const PB_NIGHT_PAUSE_MS = 2500
 const PB_SPEEDS = [0.5, 1, 2, 4]
+// The boat's marker z-index offset, far above any port marker's (500 + n*10000)
+// so it is never covered by a harbour tag it sits on.
+const PB_BOAT_Z = 10000000
+// Longest the boat will wait in port for the reframed chart to finish loading.
+const PB_TILE_WAIT_MS = 4000
 
 let pb = null
 
@@ -1181,14 +1208,48 @@ async function openPlayback (fromMs, toMs) {
   host.hidden = false
   // zoomSnap 0 allows fractional zoom, which the per-frame easing needs.
   const map = L.map(host, { zoomControl: true, zoomSnap: 0 })
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '© OpenStreetMap'
+  // updateWhenIdle defaults to true on mobile, meaning tiles are only fetched
+  // once the map stops moving — and playback moves it every frame, so it never
+  // does. On a phone or tablet the boat would sail off its initial tiles and
+  // leave nothing but the water backdrop behind. Leaflet throttles these updates
+  // to updateInterval (200 ms) anyway, so following costs a handful of tile
+  // passes a second, not one per frame. keepBuffer holds a ring of tiles just
+  // outside the view so the edge the boat is heading for is already there.
+  const tiles = { updateWhenIdle: false, keepBuffer: 4 }
+  const base = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    ...tiles, maxZoom: 19, attribution: '© OpenStreetMap'
   }).addTo(map)
+  // Leaflet brackets each round of tile fetching with these, which is exactly
+  // the signal the port pause waits on: it arms itself whenever tiles are
+  // genuinely on their way and stays clear when nothing needs loading, so the
+  // pause never waits for something that was never going to happen.
+  base.on('loading', () => {
+    if (pb) {
+      pb.tilesReady = false
+    }
+  })
+  base.on('load', () => {
+    if (pb) {
+      pb.tilesReady = true
+    }
+  })
+  // Leaflet's zoom animation transforms the tiles it already has and reloads
+  // once when it lands; the follow stands off until then so it doesn't knock the
+  // map back onto the un-animated path.
+  map.on('zoomstart', () => {
+    if (pb) {
+      pb.zooming = true
+    }
+  })
+  map.on('zoomend', () => {
+    if (pb) {
+      pb.zooming = false
+      pb.zoom = map.getZoom()
+    }
+  })
   L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', {
-    maxZoom: 18, attribution: '© OpenSeaMap'
+    ...tiles, maxZoom: 18, attribution: '© OpenSeaMap'
   }).addTo(map)
-  map.setView([trips[0].start_lat || 0, trips[0].start_lon || 0], 12)
-
   pb = {
     map,
     trips,
@@ -1203,12 +1264,17 @@ async function openPlayback (fromMs, toMs) {
     // Ground distance covered so far across the whole selected range: a log for
     // the passage, not per leg, so it keeps climbing from one trip to the next.
     meters: 0,
-    speed: 1,
-    // Current and wanted zoom, eased together each frame. Leaflet is created
-    // with zoomSnap 0 so these can be fractional and the change reads as a
-    // continuous glide rather than a step between whole zoom levels.
+    speed: pbSpeed,
+    // The zoom the follow pans at, changed only by a reframing in port.
     zoom: 0,
-    zoomTarget: 0,
+    // True while Leaflet's own zoom animation is in flight.
+    zooming: false,
+    // Set false while a reframing's tiles are still coming in; the port pause
+    // holds the boat until this comes back true (or PB_TILE_WAIT_MS runs out).
+    tilesReady: true,
+    tileWait: 0,
+    // The next leg's framing, flown to as the pause runs out.
+    nextZoom: null,
     playing: true,
     // Playback milliseconds still to rest in port, or 0 when under way. Counted
     // down rather than held as a deadline, so pausing during a port stop resumes
@@ -1218,6 +1284,10 @@ async function openPlayback (fromMs, toMs) {
     raf: 0,
     done: false,
     boat: null,
+    // Whether the departure-harbour marker has been dropped yet, and how many
+    // port markers so far, so each is stacked above the previous one.
+    startTagged: false,
+    tagSeq: 0,
     // Total sailing time in range, for the progress bar; port pauses are short
     // enough not to be worth modelling in it.
     totalMs: trips.reduce((s, tr) => s + (tr.stop_time - tr.start_time), 0),
@@ -1227,6 +1297,31 @@ async function openPlayback (fromMs, toMs) {
   $('#pb-toggle').hidden = false
   pbRenderSpeeds()
   pbRenderToggle()
+  // The map's first rendered view is the first leg's own framing — no placeholder
+  // zoom shown first, so there is nothing to snap away from when play begins. The
+  // water backdrop covers the brief fetch; pbStartTrip then reuses the cached
+  // track and sets the identical view, and the first animated frame follows from
+  // it, so the hand-off has no jump at any step. (getBoundsZoom inside pbZoomFor
+  // needs only the container size, which is present, not a prior view.)
+  $('#pb-status').textContent = t('loadingTrack')
+  let framed = false
+  for (const trip of trips) {
+    const pts = await pbTrack(trip)
+    if (pb !== run) {
+      return
+    }
+    if (pts.length >= 2) {
+      pb.zoom = pbZoomFor(pts)
+      map.setView([pts[0].lat, pts[0].lon], pb.zoom, { animate: false })
+      framed = true
+      break
+    }
+  }
+  // No leg in range had a track: give the map a view so it isn't left blank while
+  // pbStartTrip reports the no-track state.
+  if (!framed) {
+    map.setView([trips[0].start_lat || 0, trips[0].start_lon || 0], 12)
+  }
   await pbStartTrip(0)
   // Back-then-play again while the first track was in flight would otherwise
   // start a second loop on the newer run's state.
@@ -1287,18 +1382,17 @@ async function pbStartTrip (n) {
     at.lo = sogs.length ? Math.min(...sogs) : 0
     at.hi = sogs.length ? Math.max(...sogs) : 0
     $('#pb-status').textContent = ''
-    // Aim at the zoom that would frame the whole leg, capped so a hop across a
-    // harbour doesn't dive to street level. The frame loop eases towards it, so
-    // a long passage opens out and the next short leg draws back in gradually
-    // instead of the view jumping between legs.
-    const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lon]))
-    at.zoomTarget = Math.min(15, at.map.getBoundsZoom(bounds, false, L.point(50, 50)))
-    // Nothing to ease from on the first leg: start there.
-    if (!at.zoom) {
-      at.zoom = at.zoomTarget
-      at.map.setView([points[0].lat, points[0].lon], at.zoom, { animate: false })
-    }
+    // Normally the port pause has already flown here, in which case this is the
+    // same value and nothing moves. On the first leg, and if the next track
+    // wasn't prefetched in time to reframe during the pause, it applies now.
+    at.zoom = pbZoomFor(points)
+    at.map.setView([points[0].lat, points[0].lon], at.zoom, { animate: false })
     pbEnsureBoat(points[0])
+    // The departure harbour, dropped once when the first leg with a track begins.
+    if (!at.startTagged) {
+      at.startTagged = true
+      pbAddPortTag([points[0].lat, points[0].lon], placeOf(at.trips[k], 'start') || null, 'start', false)
+    }
     // Warm the next trip's track while this one plays, so the pause in port
     // isn't spent waiting on InfluxDB.
     if (at.trips[k + 1]) {
@@ -1319,6 +1413,11 @@ function pbFinish () {
   if (pb.boat) {
     pb.boat.setOpacity(0.85)
   }
+  // The boat has arrived and sits on the destination marker, which names it, so
+  // the readout is put away rather than left frozen on the last speed.
+  if (pb.el && pb.el.float) {
+    pb.el.float.hidden = true
+  }
   $('#pb-status').textContent = pb.index < 0 ? t('playbackNoTrack') : t('playbackDone')
   // The progress bar measures trip durations but advances over track spans,
   // which start at the first logged fix — a trip whose logging began late would
@@ -1331,6 +1430,35 @@ function pbFinish () {
   if (pb.drawn && pb.drawn.length) {
     pb.map.flyToBounds(L.latLngBounds(pb.drawn), { padding: [30, 30], duration: 1.6 })
   }
+}
+
+// Drop a port marker that stays on the map for the rest of the passage — the
+// start harbour when playback opens, then one at each arrival, so the route ends
+// up labelled with every port it touched. kind colours the dot: the departure
+// green, the final harbour red (matching the detail map's end markers), the
+// stops between them the accent. Placed below the boat so the boat rides over
+// its own arrival marker.
+function pbAddPortTag (latlng, label, kind, overnight) {
+  if (!pb) {
+    return
+  }
+  const sub = label && overnight ? `<small>${escapeHtml(t('overnight'))}</small>` : ''
+  const html = `<div class="pb-tag pb-tag-${kind}">` +
+    '<span class="pb-tag-dot"></span>' +
+    (label ? `<span class="pb-tag-label">${escapeHtml(label)}${sub}</span>` : '') +
+    '</div>'
+  // Leaflet stacks markers by their y-position on screen, so without help a port
+  // reached earlier but sitting lower would cover a later one. Each marker gets a
+  // step of z above the last so they layer in the order they were reached; the
+  // step (10000) dwarfs any y-difference between two that overlap. The boat rides
+  // above them all (PB_BOAT_Z).
+  L.marker(latlng, {
+    icon: L.divIcon({ className: 'pb-tag-icon', iconSize: [0, 0], iconAnchor: [0, 0], html }),
+    interactive: false,
+    keyboard: false,
+    zIndexOffset: 500 + pb.tagSeq * 10000
+  }).addTo(pb.map)
+  pb.tagSeq++
 }
 
 // The boat: a heading-rotated symbol with a floater pinned beside it carrying
@@ -1356,31 +1484,31 @@ function pbEnsureBoat (p) {
       '<path d="M12 1 L19 22 L12 18 L5 22 Z" fill="currentColor" stroke="#fff" ' +
       'stroke-width="1.5" stroke-linejoin="round"/></svg>' +
       '<div class="pb-float">' +
-      `<div class="pb-row pb-live"><span class="pb-k">STW</span><span class="pb-v pb-stw">–</span></div>` +
-      `<div class="pb-row pb-live"><span class="pb-k">${escapeHtml(t('tripMeter'))}</span>` +
+      `<div class="pb-row"><span class="pb-k">${escapeHtml(t('speed'))}</span><span class="pb-v pb-stw">–</span></div>` +
+      `<div class="pb-row"><span class="pb-k">${escapeHtml(t('tripMeter'))}</span>` +
       '<span class="pb-v pb-trip">–</span></div>' +
       `<div class="pb-motor" hidden>${escapeHtml(t('motor'))}</div>` +
-      '<div class="pb-port" hidden></div>' +
       '</div></div>'
   })
   pb.boat = L.marker([p.lat, p.lon], {
-    icon, interactive: false, keyboard: false, zIndexOffset: 1000
+    icon, interactive: false, keyboard: false, zIndexOffset: PB_BOAT_Z
   }).addTo(pb.map)
   const el = pb.boat.getElement()
   pb.el = {
     glyph: el.querySelector('.pb-glyph'),
+    float: el.querySelector('.pb-float'),
     stw: el.querySelector('.pb-stw'),
     trip: el.querySelector('.pb-trip'),
-    motor: el.querySelector('.pb-motor'),
-    port: el.querySelector('.pb-port'),
-    live: [...el.querySelectorAll('.pb-live')]
+    motor: el.querySelector('.pb-motor')
   }
 }
 
-// In port the readout gives way to the place name; under way it shows speed, the
-// running distance for the whole selection, and an engine badge when the motor
-// was on. Values are only written when they change, so a frame that moves the
-// boat a few metres doesn't touch the DOM at all.
+// Under way the readout shows speed, the running distance for the whole
+// selection, and an engine badge when the motor was on. In port it is hidden
+// altogether: the boat sits on its own port marker, which already names the
+// harbour, so the readout would only repeat it. Values are written only when
+// they change, so a frame that moves the boat a few metres doesn't touch the DOM.
+// portLabel is still the in-port signal even though its text is no longer shown.
 function pbSetBoat (latlng, bearing, p, portLabel) {
   pb.boat.setLatLng(latlng)
   const e = pb.el
@@ -1391,19 +1519,13 @@ function pbSetBoat (latlng, bearing, p, portLabel) {
   }
   const inPort = portLabel != null
   if (inPort !== pb.lastInPort) {
-    e.live.forEach((r) => { r.hidden = inPort })
-    e.port.hidden = !inPort
+    e.float.hidden = inPort
     pb.lastInPort = inPort
     if (!inPort) {
       pb.lastStw = pb.lastTrip = pb.lastMotor = null
     }
   }
   if (inPort) {
-    if (portLabel !== pb.lastPort) {
-      e.port.textContent = portLabel
-      pb.lastPort = portLabel
-    }
-    e.motor.hidden = true
     return
   }
   const stw = p && p.stw != null ? `${n(toKnots(p.stw), 1)} kn` : '–'
@@ -1441,12 +1563,41 @@ function pbFrame (now) {
   // it left off instead of jumping a leg ahead.
   const dt = Math.min(250, now - pb.last)
   pb.last = now
-  // Resting in port between two trips.
+  // Resting in port between two trips. The reframing for the next leg happens
+  // here, while the boat is stationary: the zoom is done and settled before it
+  // sets off, so a leg is sailed at a constant zoom with the tile grid left
+  // alone. Doing it while under way meant rebuilding the grid all through the
+  // leg, and a short harbour hop plays in half a second — far too little time to
+  // finish, so it flickered the whole way across.
   if (pb.pauseLeft > 0) {
     pb.pauseLeft -= dt
-    if (pb.pauseLeft <= 0) {
-      pb.pauseLeft = 0
-      pbStartTrip(pb.index + 1)
+    // Leave the map alone while it is flying; panning under it would fight the
+    // animation and drop it back onto the per-frame path that flickers.
+    if (!pb.zooming) {
+      pbSetView(pb.boat.getLatLng())
+    }
+    if (pb.pauseLeft <= 0 && pb.nextZoom != null) {
+      // Departure is imminent: reframe now, then fall through to waiting for the
+      // flight to land and its tiles to arrive.
+      pbReframe(pb.boat.getLatLng(), pb.nextZoom)
+      pb.nextZoom = null
+      pb.pauseLeft = 1
+    } else if (pb.pauseLeft <= 0 && pb.zooming) {
+      pb.pauseLeft = 1
+    } else if (pb.pauseLeft <= 0) {
+      // Don't set off until the chart has caught up. Reframing costs a round of
+      // tile loading, and how long that takes depends entirely on the link —
+      // guessing a duration works on a desk and not on a mooring. So the boat
+      // simply lies in port until the tiles report themselves loaded, which
+      // costs nothing on a fast connection and holds as long as it must on a
+      // slow one. Capped, so a dead tile server can't strand the playback.
+      if (!pb.tilesReady && pb.tileWait < PB_TILE_WAIT_MS) {
+        pb.tileWait += dt
+        pb.pauseLeft = 1
+      } else {
+        pb.pauseLeft = 0
+        pbStartTrip(pb.index + 1)
+      }
     }
     pb.raf = requestAnimationFrame(pbFrame)
     return
@@ -1474,12 +1625,10 @@ function pbFrame (now) {
   const lat = a.lat + (b.lat - a.lat) * f
   const lon = a.lon + (b.lon - a.lon) * f
   pbSetBoat([lat, lon], pbBearing(a, b), f < 0.5 ? a : b)
-  // Follow the boat every frame rather than panning in jumps: a continuous
-  // setView reads as the chart sliding under a fixed boat. The zoom eases
-  // towards the leg's target on an exponential curve, framed in elapsed time so
-  // it glides at the same rate whatever the frame rate.
-  pb.zoom += (pb.zoomTarget - pb.zoom) * (1 - Math.exp(-dt / 600))
-  pb.map.setView([lat, lon], pb.zoom, { animate: false })
+  // Follow the boat every frame at a fixed zoom: a continuous setView reads as
+  // the chart sliding under a stationary boat. The zoom itself only ever changes
+  // in port (pbReframe), never under way, so the tile grid is left alone here.
+  pbSetView([lat, lon])
   pbRenderClock(a.t + (b.t - a.t) * f)
 
   // Trip over: rest in port, then pick up the next one.
@@ -1488,6 +1637,10 @@ function pbFrame (now) {
     const next = pb.trips[pb.index + 1]
     const label = placeOf(trip, 'stop') || null
     const pause = pbPauseAfter(trip, next)
+    // Leave a marker at the arrival, kept for the rest of the passage — the final
+    // harbour when there is no next leg, an intermediate port otherwise, noting a
+    // night spent there (pause is 0 with no next, so the end never reads night).
+    pbAddPortTag([lat, lon], label, next ? 'port' : 'end', pause >= PB_NIGHT_PAUSE_MS)
     if (!next) {
       pbFinish()
       pb.raf = requestAnimationFrame(pbFrame)
@@ -1496,11 +1649,46 @@ function pbFrame (now) {
     pbSetBoat([lat, lon], 0, null,
       `${label ? label + ' · ' : ''}${pause >= PB_NIGHT_PAUSE_MS ? t('overnight') : t('inPort')}`)
     pb.pauseLeft = pause / pb.speed
+    // Note the next leg's framing so the pause can fly to it. The track is
+    // normally already prefetched; if it isn't, pbStartTrip sets the view when
+    // the leg begins with a plain cut instead.
+    const nextPoints = pb.tracks.get(next.id)
+    pb.nextZoom = nextPoints && nextPoints.length >= 2 ? pbZoomFor(nextPoints) : null
+    pb.tileWait = 0
     // Idle the frame loop until the next trip's points are in: without this the
     // finished trip's tail would replay and schedule a second pause.
     pb.points = []
   }
   pb.raf = requestAnimationFrame(pbFrame)
+}
+
+// Follow the boat, at a zoom that only ever changes in port.
+//
+// Nothing is done here to animate the zoom by hand. Handing Leaflet a stream of
+// intermediate zooms makes it rebuild the tile grid for each one, and every
+// rebuild blanks the map until the replacements arrive — that was the flicker.
+// Leaflet's own zoom animation does the same visual with a CSS transform on the
+// tiles it already has, and reloads once at the end; it even suppresses the grid
+// update while a flyTo is in flight. So the reframing is one flyTo (see
+// pbReframe) and this only ever pans.
+function pbSetView (center) {
+  pb.map.setView(center, pb.zoom, { animate: false })
+}
+
+// Reframe for the next leg, as a single animated flight. Called as the pause
+// runs out, so the arrival is seen at the leg's own framing and the new one is
+// in place by the time the boat leaves.
+function pbReframe (center, zoom) {
+  pb.zoom = zoom
+  pb.zooming = true
+  pb.map.flyTo(center, zoom, { duration: 0.9 })
+}
+
+// The zoom that frames a whole leg, capped so a hop across a harbour doesn't
+// dive to street level.
+function pbZoomFor (points) {
+  const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lon]))
+  return Math.min(15, pb.map.getBoundsZoom(bounds, false, L.point(50, 50)))
 }
 
 // Speed is quantised into a few bands so consecutive steps at a similar speed
@@ -1560,19 +1748,35 @@ function pbRenderToggle () {
   b.textContent = pb.done ? t('replay') : (pb.playing ? t('pause') : t('play'))
 }
 
+// The chosen speed lives outside any one run, so it can be picked before Play is
+// pressed and carries over to the next playback. Both chip sets — the one in the
+// list panel and the one under the map — read and write it.
+let pbSpeed = 1
+
 function pbRenderSpeeds () {
-  const box = $('#pb-speeds')
+  // The list panel, the bar under the map, and the video-export panel all show
+  // the same speed and write the same pbSpeed, so choosing it in any of them is
+  // reflected in the others.
+  pbSpeedChips($('#pb-speeds-pre'))
+  pbSpeedChips($('#pb-speeds'))
+  pbSpeedChips($('#ex-speeds'))
+}
+
+function pbSpeedChips (box) {
+  if (!box) {
+    return
+  }
   box.innerHTML = ''
   PB_SPEEDS.forEach((s) => {
     const b = document.createElement('button')
     b.type = 'button'
-    b.className = 'year-chip' + (s === pb.speed ? ' on' : '')
+    b.className = 'year-chip' + (s === pbSpeed ? ' on' : '')
     b.textContent = `${n(s, s % 1 ? 1 : 0)}×`
     b.addEventListener('click', () => {
-      if (!pb) {
-        return
+      pbSpeed = s
+      if (pb) {
+        pb.speed = s
       }
-      pb.speed = s
       pbRenderSpeeds()
     })
     box.appendChild(b)
@@ -1653,4 +1857,5 @@ $('#pb-toggle').addEventListener('click', () => {
   }
 })
 applyStatic()
+pbRenderSpeeds()
 loadList()

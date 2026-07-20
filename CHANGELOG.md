@@ -4,17 +4,26 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.0] - 2026-07-20
+## [0.9.0] - 2026-07-21
 
 ### Added
 - **Passage playback.** Replays the trips between two dates on the map: the boat
   moves along its recorded track drawing a speed-coloured trail behind it, the
-  view follows and eases its zoom to each leg, and it rests briefly in each port
-  along the way — longer where the boat lay overnight. A floating readout beside
-  the boat shows speed through the water, an engine badge for the stretches under
-  power, and a trip meter running over the whole selected range. An hour under
-  way plays in two seconds, adjustable from 0.5× to 4×. The dates default to the
-  season in view, so pulling them in gives a single cruise.
+  view follows, and it rests briefly in each port along the way — longer where
+  the boat lay overnight, reframing for the next leg while it lies there. It
+  leaves a named marker at the departure and at every port it reaches (noting a
+  night spent there), so the route ends up labelled with the whole cruise. A
+  floating readout beside the
+  boat shows speed, an engine badge for the stretches under power, and a trip
+  meter running over the whole selected range. An hour under way plays in two
+  seconds, adjustable from 0.5× to 4×. The dates default to the season in view,
+  so pulling them in gives a single cruise.
+- **Save a passage as video.** Renders the playback to an MP4 frame by frame,
+  waiting for every chart tile, so the film is identical however slow the
+  connection is — not a screen recording. Portrait, square or landscape; the
+  boat, its readout and an opening title are drawn in. On a phone the share sheet
+  offers the camera roll; elsewhere it downloads. Needs a browser with WebCodecs
+  (Chrome, Edge, or Safari 17+); the button explains itself where it is missing.
 
 ## [0.8.0] - 2026-07-20
 

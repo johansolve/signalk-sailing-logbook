@@ -213,6 +213,15 @@ main {
   font-size: 0.8rem;
 }
 
+.export {
+  margin-top: 1rem;
+}
+.ex-progress {
+  flex: none;
+  width: 100%;
+  margin: 0.85rem 0 0.35rem;
+}
+
 /* the boat and its floating readout, anchored on the map */
 .pb-boat-icon {
   /* The icon is zero-sized and its content is positioned around that point, so
@@ -273,9 +282,46 @@ main {
   letter-spacing: 0.04em;
   color: var(--gybe);
 }
-.pb-port {
+/* persistent port markers left along the route */
+.pb-tag {
+  position: relative;
+}
+.pb-tag-dot {
+  position: absolute;
+  left: -6px;
+  top: -6px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: var(--accent);
+  box-shadow: 0 1px 3px rgba(20, 40, 60, 0.4);
+}
+.pb-tag-start .pb-tag-dot {
+  background: var(--tack);
+}
+.pb-tag-end .pb-tag-dot {
+  background: var(--danger);
+}
+.pb-tag-label {
+  position: absolute;
+  left: 10px;
+  top: -12px;
+  white-space: nowrap;
+  padding: 0.1rem 0.4rem;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--ink);
+  font-size: 0.72rem;
   font-weight: 600;
-  font-size: 0.75rem;
+  box-shadow: 0 1px 4px rgba(20, 40, 60, 0.2);
+}
+.pb-tag-label small {
+  display: block;
+  font-weight: 500;
+  font-size: 0.62rem;
+  color: var(--muted);
 }
 
 /* trips table */

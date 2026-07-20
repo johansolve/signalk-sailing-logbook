@@ -23,6 +23,22 @@ module.exports = [
     languageOptions: { sourceType: 'script', globals: { ...globals.browser, L: 'readonly' } }
   },
   {
+    // export.js is a second classic script sharing app.js's global scope, so the
+    // helpers it borrows from there have to be declared here.
+    files: ['public/export.js'],
+    languageOptions: {
+      globals: {
+        Mp4Muxer: 'readonly',
+        READ: 'readonly', getJSON: 'readonly', t: 'readonly', n: 'readonly',
+        toKnots: 'readonly', fmtDate: 'readonly', fmtTime: 'readonly',
+        fmtDuration: 'readonly', placeOf: 'readonly', sogColor: 'readonly',
+        pb: 'readonly', pbBearing: 'readonly', pbPauseAfter: 'readonly',
+        pbRenderToggle: 'readonly', pbLoop: 'readonly',
+        PB_SEC_PER_HOUR: 'readonly', PB_NIGHT_PAUSE_MS: 'readonly'
+      }
+    }
+  },
+  {
     files: ['test/**/*.js'],
     languageOptions: { globals: { ...globals.node, ...globals.mocha } }
   }

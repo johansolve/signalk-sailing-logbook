@@ -37,6 +37,7 @@
           <div class="scan-controls">
             <label><span data-i18n="from">From</span> <input type="date" id="pb-from"></label>
             <label><span data-i18n="to">To</span> <input type="date" id="pb-to"></label>
+            <div class="pb-speeds" id="pb-speeds-pre"></div>
             <button id="pb-open" data-i18n="playbackStart">Play</button>
           </div>
         </div>
@@ -79,12 +80,28 @@
         <div class="pb-speeds" id="pb-speeds"></div>
       </div>
       <p id="pb-status" class="hint"></p>
+
+      <details class="scan export">
+        <summary data-i18n="exportVideoPanel">Save as video</summary>
+        <div class="scan-body">
+          <p class="hint" data-i18n="exportHint">Re-renders the passage frame by frame into an MP4, waiting for every chart tile, so the film is the same however slow the connection is.</p>
+          <div class="scan-controls">
+            <div class="pb-speeds" id="ex-speeds"></div>
+            <div class="pb-speeds" id="ex-sizes"></div>
+            <button id="ex-run" data-i18n="exportVideo">Save as video</button>
+          </div>
+          <div class="pb-progress ex-progress"><div id="ex-fill" class="pb-fill"></div></div>
+          <p id="ex-status" class="hint"></p>
+        </div>
+      </details>
     </section>
   </main>
 
   <!-- Bump ?v= together with package.json "version" whenever app.js/style.css
        change, so browsers fetch the new asset instead of a cached one. -->
   <script src="vendor/leaflet.js"></script>
+  <script src="vendor/mp4-muxer.js"></script>
   <script src="app.js?v=0.9.0"></script>
+  <script src="export.js?v=0.9.0"></script>
 </body>
 </html>
