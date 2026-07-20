@@ -19,6 +19,9 @@ const STR = {
     from: 'From', to: 'To', scan: 'Scan',
     date: 'Date', route: 'From → To', duration: 'Duration', distance: 'Distance', max: 'Max', tacksGybes: 'Tacks/Gybes',
     noTrips: 'No trips yet. Go sailing, or scan the history above.', back: '← Back',
+    allYears: 'All',
+    seasonTrips: 'Trips', seasonDistance: 'Distance', seasonTime: 'Time',
+    seasonManeuvers: 'Tacks/Gybes', seasonMotor: 'Under engine',
     underWay: '(under way)', loading: 'Loading…', unknown: 'Unknown',
     startPlace: 'Start place', endPlace: 'End place', place: 'Place', savePlaces: 'Save places',
     placeHint: 'A named place is reused for every trip starting or ending within a 250 m radius. Clear a field and save to remove its name.',
@@ -50,6 +53,9 @@ const STR = {
     from: 'Från', to: 'Till', scan: 'Skanna',
     date: 'Datum', route: 'Från → Till', duration: 'Restid', distance: 'Distans', max: 'Max', tacksGybes: 'Slag/Gipp',
     noTrips: 'Inga trips än. Segla, eller skanna historiken ovan.', back: '← Tillbaka',
+    allYears: 'Alla',
+    seasonTrips: 'Trips', seasonDistance: 'Distans', seasonTime: 'Tid',
+    seasonManeuvers: 'Slag/Gipp', seasonMotor: 'För motor',
     underWay: '(pågår)', loading: 'Laddar…', unknown: 'Okänd',
     startPlace: 'Startplats', endPlace: 'Slutplats', place: 'Plats', savePlaces: 'Spara platser',
     placeHint: 'Ett platsnamn återanvänds för alla trips som startar eller slutar inom 250 m radie. Töm ett fält och spara för att ta bort namnet.',
@@ -172,15 +178,117 @@ async function getJSON (url) {
 
 // ---- list view -----------------------------------------------------------
 
+// Every trip the server has, kept here so switching year is a client-side slice
+// with no round-trip. A trip is ~500 bytes, so a decade of sailing is a couple
+// of hundred kB; revisit if a logbook ever runs to thousands of trips.
+let allTrips = []
+let currentYear = null
+
+const yearOf = (tr) => new Date(tr.start_time).getFullYear()
+const yearsOf = (trips) => [...new Set(trips.map(yearOf))].sort((a, b) => b - a)
+
 async function loadList () {
   showView('list')
   try {
-    const trips = await getJSON(`${READ}/trips`)
-    renderList(trips)
+    allTrips = await getJSON(`${READ}/trips`)
+    selectYear(initialYear(yearsOf(allTrips)))
     setStatus('')
   } catch (e) {
     setStatus(t('couldNotLoadTrips') + e.message, true)
   }
+}
+
+// ?year=2027 (or ?year=all) wins, so a season is linkable; otherwise the most
+// recent year that actually has trips. Defaulting to the calendar year instead
+// would open on an empty list every winter, which is most of the year up here.
+function initialYear (years) {
+  const forced = new URLSearchParams(location.search).get('year')
+  if (forced === 'all') {
+    return 'all'
+  }
+  if (years.includes(Number(forced))) {
+    return Number(forced)
+  }
+  return years.length ? years[0] : 'all'
+}
+
+function selectYear (year) {
+  currentYear = year
+  const trips = year === 'all' ? allTrips : allTrips.filter((tr) => yearOf(tr) === year)
+  renderYears(yearsOf(allTrips))
+  renderSeason(trips)
+  renderList(trips)
+  // Keep the chosen year in the URL (without a reload) so it survives the trip
+  // detail and back, and can be shared. Any other param, ?lang, is preserved.
+  const q = new URLSearchParams(location.search)
+  q.set('year', String(year))
+  history.replaceState(null, '', `${location.pathname}?${q}`)
+}
+
+// One chip per year with trips, newest first, plus "All". Hidden while a single
+// season is all there is, so a new logbook isn't cluttered by a filter of one.
+function renderYears (years) {
+  const box = $('#year-filter')
+  box.hidden = years.length < 2
+  box.innerHTML = ''
+  if (box.hidden) {
+    return
+  }
+  const add = (value, label) => {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.className = 'year-chip' + (value === currentYear ? ' on' : '')
+    b.textContent = label
+    b.addEventListener('click', () => selectYear(value))
+    box.appendChild(b)
+  }
+  years.forEach((y) => add(y, String(y)))
+  add('all', t('allYears'))
+}
+
+// Season totals for whatever is in view. Motoring is only shown when the engine
+// actually ran, so a pure sailing season doesn't carry a "0m" cell.
+function renderSeason (trips) {
+  const box = $('#season-sum')
+  box.hidden = !trips.length
+  box.innerHTML = ''
+  if (box.hidden) {
+    return
+  }
+  let nm = 0
+  let ms = 0
+  let motorMs = 0
+  // Time of the trips whose engine share is known, so a trip still under way
+  // (share computed only once it ends) doesn't dilute the motoring percentage.
+  let ratedMs = 0
+  let tacks = 0
+  let gybes = 0
+  const now = Date.now()
+  trips.forEach((tr) => {
+    nm += tr.distance_nm || 0
+    tacks += tr.tack || 0
+    gybes += tr.gybe || 0
+    // A trip under way counts its elapsed time, so every cell describes the
+    // same set of trips.
+    const d = (tr.stop_time == null ? now : tr.stop_time) - tr.start_time
+    ms += d
+    if (tr.engine_share != null) {
+      ratedMs += d
+      motorMs += d * tr.engine_share
+    }
+  })
+  const cells = [
+    [t('seasonTrips'), String(trips.length)],
+    [t('seasonDistance'), `${n(nm, 1)} NM`],
+    [t('seasonTime'), fmtDuration(0, ms)],
+    [t('seasonManeuvers'), `${tacks}/${gybes}`]
+  ]
+  if (motorMs > 60000 && ratedMs > 0) {
+    cells.push([t('seasonMotor'), `${fmtDuration(0, motorMs)} (${pct((motorMs / ratedMs) * 100)})`])
+  }
+  box.innerHTML = cells
+    .map(([k, v]) => `<div class="ss-cell"><span class="ss-k">${k}</span><span class="ss-v">${escapeHtml(v)}</span></div>`)
+    .join('')
 }
 
 function renderList (trips) {

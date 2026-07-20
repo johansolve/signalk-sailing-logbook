@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-20
+
+### Added
+- **Season filter.** The trip list is filtered by year, defaulting to the most
+  recent season that has trips (not the calendar year, which would open on an
+  empty list all winter). The chosen year is kept in the URL as `?year=`, so it
+  survives opening a trip and coming back, and can be linked. The filter stays
+  hidden until there is more than one season to choose between.
+- **Season totals** above the list for the year in view: number of trips, total
+  distance, total time under way, tacks/gybes, and time under engine with its
+  share of the total (shown only when the engine actually ran).
+
 ## [0.7.0] - 2026-07-19
 
 ### Changed

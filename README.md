@@ -52,6 +52,9 @@ app lists your trips and produces a ready-to-paste logbook entry for each one.
   date range, using the exact same detection logic as live.
 - **Web app** with a trip list, a detail view, editable place names, per-maneuver
   deletion, and a one-click plain-text logbook entry to copy.
+- **Season view**: the trip list is filtered by year (defaulting to the most
+  recent season with trips, linkable as `?year=`) and topped with that season's
+  totals — trips, distance, time under way, tacks/gybes and time under engine.
 - **Localizable** web app: English and Swedish are included, and adding a
   language is just a string set (`STR` in `public/app.js` for the UI and
   `plugin/lib/report.js` for the logbook entry, each with its `locale`). Follows
