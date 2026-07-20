@@ -6,7 +6,7 @@
   <title>Logbook</title>
   <link rel="icon" type="image/svg+xml" href="logo.svg">
   <link rel="stylesheet" href="vendor/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=0.8.0">
+  <link rel="stylesheet" href="style.css?v=0.9.0">
 </head>
 <body>
   <header class="topbar">
@@ -26,6 +26,18 @@
             <label><span data-i18n="to">To</span> <input type="date" id="scan-to"></label>
             <button id="scan-btn" data-i18n="scan">Scan</button>
             <span id="scan-result" class="scan-result"></span>
+          </div>
+        </div>
+      </details>
+
+      <details class="scan">
+        <summary data-i18n="playback">Play back a passage</summary>
+        <div class="scan-body">
+          <p class="hint" data-i18n="playbackHint">Replays the trips between two dates on the map, the boat drawing its track as it goes and pausing briefly in each port.</p>
+          <div class="scan-controls">
+            <label><span data-i18n="from">From</span> <input type="date" id="pb-from"></label>
+            <label><span data-i18n="to">To</span> <input type="date" id="pb-to"></label>
+            <button id="pb-open" data-i18n="playbackStart">Play</button>
           </div>
         </div>
       </details>
@@ -54,11 +66,25 @@
       <button class="back" id="back-btn" data-i18n="back">← Back</button>
       <div id="detail"></div>
     </section>
+
+    <!-- Playback view -->
+    <section id="playback-view" hidden>
+      <button class="back" id="pb-back" data-i18n="back">← Back</button>
+      <h2 id="pb-title"></h2>
+      <div id="pb-map" class="trackmap"></div>
+      <div class="pb-bar">
+        <button id="pb-toggle" class="pb-toggle"></button>
+        <div class="pb-progress"><div id="pb-fill" class="pb-fill"></div></div>
+        <span id="pb-clock" class="pb-clock"></span>
+        <div class="pb-speeds" id="pb-speeds"></div>
+      </div>
+      <p id="pb-status" class="hint"></p>
+    </section>
   </main>
 
   <!-- Bump ?v= together with package.json "version" whenever app.js/style.css
        change, so browsers fetch the new asset instead of a cached one. -->
   <script src="vendor/leaflet.js"></script>
-  <script src="app.js?v=0.8.0"></script>
+  <script src="app.js?v=0.9.0"></script>
 </body>
 </html>

@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-07-20
+
+### Added
+- **Passage playback.** Replays the trips between two dates on the map: the boat
+  moves along its recorded track drawing a speed-coloured trail behind it, the
+  view follows and eases its zoom to each leg, and it rests briefly in each port
+  along the way — longer where the boat lay overnight. A floating readout beside
+  the boat shows speed through the water, an engine badge for the stretches under
+  power, and a trip meter running over the whole selected range. An hour under
+  way plays in two seconds, adjustable from 0.5× to 4×. The dates default to the
+  season in view, so pulling them in gives a single cruise.
+
 ## [0.8.0] - 2026-07-20
 
 ### Added

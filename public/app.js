@@ -22,6 +22,14 @@ const STR = {
     allYears: 'All',
     seasonTrips: 'Trips', seasonDistance: 'Distance', seasonTime: 'Time',
     seasonManeuvers: 'Tacks/Gybes', seasonMotor: 'Under engine',
+    playback: 'Play back a passage',
+    playbackHint: 'Replays the trips between two dates on the map, the boat drawing its track as it goes and pausing briefly in each port.',
+    playbackStart: 'Play', play: 'Play', pause: 'Pause', replay: 'Replay',
+    tripMeter: 'Trip', inPort: 'in port', overnight: 'overnight',
+    playbackEmpty: 'No trips between those dates.',
+    playbackNoTrack: 'None of those trips has a logged track.',
+    playbackDone: 'Playback finished.', loadingTrack: 'Loading track…',
+    playbackNoMap: 'The map library did not load.',
     underWay: '(under way)', loading: 'Loading…', unknown: 'Unknown',
     startPlace: 'Start place', endPlace: 'End place', place: 'Place', savePlaces: 'Save places',
     placeHint: 'A named place is reused for every trip starting or ending within a 250 m radius. Clear a field and save to remove its name.',
@@ -56,6 +64,14 @@ const STR = {
     allYears: 'Alla',
     seasonTrips: 'Trips', seasonDistance: 'Distans', seasonTime: 'Tid',
     seasonManeuvers: 'Slag/Gipp', seasonMotor: 'För motor',
+    playback: 'Spela upp en seglats',
+    playbackHint: 'Spelar upp tripsen mellan två datum på kartan, båten ritar sitt spår efter sig och stannar till i varje hamn.',
+    playbackStart: 'Spela upp', play: 'Spela', pause: 'Pausa', replay: 'Spela om',
+    tripMeter: 'Trip', inPort: 'i hamn', overnight: 'övernattning',
+    playbackEmpty: 'Inga trips mellan de datumen.',
+    playbackNoTrack: 'Ingen av tripsen har något loggat spår.',
+    playbackDone: 'Uppspelningen är klar.', loadingTrack: 'Hämtar spår…',
+    playbackNoMap: 'Kartbiblioteket kunde inte laddas.',
     underWay: '(pågår)', loading: 'Laddar…', unknown: 'Okänd',
     startPlace: 'Startplats', endPlace: 'Slutplats', place: 'Plats', savePlaces: 'Spara platser',
     placeHint: 'Ett platsnamn återanvänds för alla trips som startar eller slutar inom 250 m radie. Töm ett fält och spara för att ta bort namnet.',
@@ -218,6 +234,7 @@ function selectYear (year) {
   renderYears(yearsOf(allTrips))
   renderSeason(trips)
   renderList(trips)
+  pbDefaultDates(trips)
   // Keep the chosen year in the URL (without a reload) so it survives the trip
   // detail and back, and can be shared. Any other param, ?lang, is preserved.
   const q = new URLSearchParams(location.search)
@@ -310,6 +327,23 @@ function renderList (trips) {
     row.addEventListener('click', () => loadDetail(tr.id))
     tbody.appendChild(row)
   })
+}
+
+// Point the playback range at the season in view, so opening the panel offers
+// that whole season and a shorter cruise is a matter of pulling the dates in.
+// Local date parts, not toISOString, which would shift a summer evening a day.
+function pbDefaultDates (trips) {
+  if (!trips.length) {
+    return
+  }
+  const iso = (ms) => {
+    const d = new Date(ms)
+    const p = (v) => String(v).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+  }
+  const times = trips.map((tr) => tr.start_time)
+  $('#pb-from').value = iso(Math.min(...times))
+  $('#pb-to').value = iso(Math.max(...times))
 }
 
 // ---- detail view ---------------------------------------------------------
@@ -1051,15 +1085,513 @@ async function runScan () {
   }
 }
 
+// ---- playback ------------------------------------------------------------
+
+// An hour under way plays in two seconds, so a passage feels long and a harbour
+// shuffle feels short; the speed control multiplies this. Between trips the boat
+// rests in port — a beat for a lunch stop, longer when it lay there overnight.
+const PB_SEC_PER_HOUR = 2
+const PB_PORT_PAUSE_MS = 1000
+const PB_NIGHT_PAUSE_MS = 2500
+const PB_SPEEDS = [0.5, 1, 2, 4]
+
+let pb = null
+
+function pbTeardown () {
+  if (!pb) {
+    return
+  }
+  if (pb.raf) {
+    cancelAnimationFrame(pb.raf)
+  }
+  if (pb.map) {
+    pb.map.remove()
+  }
+  pb = null
+}
+
+// Start (or restart) the animation loop. The loop stops itself whenever nothing
+// is moving — paused or finished — rather than waking 60 times a second to do
+// nothing, so resuming has to kick it off again.
+function pbLoop () {
+  if (!pb) {
+    return
+  }
+  cancelAnimationFrame(pb.raf)
+  pb.last = performance.now()
+  pb.raf = requestAnimationFrame(pbFrame)
+}
+
+// Blank the controls, so a run that ends early (no trips in range, no map) can't
+// leave the previous run's chips and clock behind for the user to click.
+function pbResetControls () {
+  $('#pb-speeds').innerHTML = ''
+  $('#pb-toggle').hidden = true
+  $('#pb-clock').textContent = ''
+  $('#pb-fill').style.width = '0%'
+}
+
+// Ground distance between two track points, in metres. Leaflet's own great
+// circle distance, so the trip meter agrees with the map rather than with a
+// second implementation of the same formula.
+function pbLegMeters (map, a, b) {
+  return map.distance([a.lat, a.lon], [b.lat, b.lon])
+}
+
+// Compass bearing a→b, for pointing the boat symbol where it is heading.
+function pbBearing (a, b) {
+  const φ1 = (a.lat * Math.PI) / 180
+  const φ2 = (b.lat * Math.PI) / 180
+  const Δλ = ((b.lon - a.lon) * Math.PI) / 180
+  const y = Math.sin(Δλ) * Math.cos(φ2)
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ)
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360
+}
+
+// The pause after a trip: a beat in port, longer if the boat stayed the night.
+// Overnight means exactly that, the two trips fall on different calendar days —
+// a long lunch stop is still a lunch stop, however many hours it ran to.
+function pbPauseAfter (trip, next) {
+  if (!next) {
+    return 0
+  }
+  const a = new Date(trip.stop_time)
+  const b = new Date(next.start_time)
+  const overnight = a.getDate() !== b.getDate() || a.getMonth() !== b.getMonth() ||
+    a.getFullYear() !== b.getFullYear()
+  return overnight ? PB_NIGHT_PAUSE_MS : PB_PORT_PAUSE_MS
+}
+
+async function openPlayback (fromMs, toMs) {
+  showView('playback')
+  pbTeardown()
+  const trips = allTrips
+    .filter((tr) => tr.stop_time != null && tr.start_time >= fromMs && tr.start_time <= toMs)
+    .sort((a, b) => a.start_time - b.start_time)
+  $('#pb-title').textContent = `${fmtDate(fromMs)} – ${fmtDate(toMs)}`
+  $('#pb-status').textContent = ''
+  if (!trips.length || typeof L === 'undefined') {
+    pbResetControls()
+    $('#pb-map').hidden = true
+    $('#pb-status').textContent = trips.length ? t('playbackNoMap') : t('playbackEmpty')
+    return
+  }
+
+  const host = $('#pb-map')
+  host.hidden = false
+  // zoomSnap 0 allows fractional zoom, which the per-frame easing needs.
+  const map = L.map(host, { zoomControl: true, zoomSnap: 0 })
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '© OpenStreetMap'
+  }).addTo(map)
+  L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', {
+    maxZoom: 18, attribution: '© OpenSeaMap'
+  }).addTo(map)
+  map.setView([trips[0].start_lat || 0, trips[0].start_lon || 0], 12)
+
+  pb = {
+    map,
+    trips,
+    from: fromMs,
+    to: toMs,
+    // Every trip's track, fetched lazily and kept so a replay costs no requests.
+    tracks: new Map(),
+    index: -1,
+    points: [],
+    i: 0,
+    clock: 0,
+    // Ground distance covered so far across the whole selected range: a log for
+    // the passage, not per leg, so it keeps climbing from one trip to the next.
+    meters: 0,
+    speed: 1,
+    // Current and wanted zoom, eased together each frame. Leaflet is created
+    // with zoomSnap 0 so these can be fractional and the change reads as a
+    // continuous glide rather than a step between whole zoom levels.
+    zoom: 0,
+    zoomTarget: 0,
+    playing: true,
+    // Playback milliseconds still to rest in port, or 0 when under way. Counted
+    // down rather than held as a deadline, so pausing during a port stop resumes
+    // it where it was instead of finding it already expired.
+    pauseLeft: 0,
+    last: 0,
+    raf: 0,
+    done: false,
+    boat: null,
+    // Total sailing time in range, for the progress bar; port pauses are short
+    // enough not to be worth modelling in it.
+    totalMs: trips.reduce((s, tr) => s + (tr.stop_time - tr.start_time), 0),
+    playedMs: 0
+  }
+  const run = pb
+  $('#pb-toggle').hidden = false
+  pbRenderSpeeds()
+  pbRenderToggle()
+  await pbStartTrip(0)
+  // Back-then-play again while the first track was in flight would otherwise
+  // start a second loop on the newer run's state.
+  if (pb === run) {
+    pbLoop()
+  }
+}
+
+// Fetch a trip's track, from the cache when we already have it. Returns [] for a
+// trip with no logged position, which playback skips.
+async function pbTrack (trip) {
+  if (pb.tracks.has(trip.id)) {
+    return pb.tracks.get(trip.id)
+  }
+  let points
+  try {
+    points = (await getJSON(`${READ}/trips/${trip.id}/track`)).points || []
+  } catch (e) {
+    // Don't cache a failure: InfluxDB may just have been briefly unreachable,
+    // and a replay should try the trip again rather than skip it for good.
+    return []
+  }
+  if (pb) {
+    pb.tracks.set(trip.id, points)
+  }
+  return points
+}
+
+// Move to trip n, skipping any without a track. Fits the map to the whole trip
+// so a long passage zooms out and a harbour shuffle stays close in, then holds
+// that zoom while the boat is followed.
+async function pbStartTrip (n) {
+  const at = pb
+  $('#pb-status').textContent = t('loadingTrack')
+  for (let k = n; k < at.trips.length; k++) {
+    const points = await pbTrack(at.trips[k])
+    // Playback was torn down (or restarted) while the track was in flight.
+    if (pb !== at) {
+      return false
+    }
+    if (points.length < 2) {
+      // A trip with no logged track is skipped, so its time must leave the
+      // progress bar's denominator too or the bar can never reach the end.
+      at.totalMs -= at.trips[k].stop_time - at.trips[k].start_time
+      continue
+    }
+    at.index = k
+    at.points = points
+    at.i = 0
+    at.clock = points[0].t
+    at.pauseLeft = 0
+    // Start a fresh trail run, so the new trip's first step doesn't extend the
+    // previous trip's last polyline straight across the harbour.
+    at.seg = null
+    // Colour the trail against this trip's own speed range, as the detail map's
+    // heat-line does, so a slow day still shows its fast stretches.
+    const sogs = points.map((p) => p.sog).filter((s) => s != null)
+    at.lo = sogs.length ? Math.min(...sogs) : 0
+    at.hi = sogs.length ? Math.max(...sogs) : 0
+    $('#pb-status').textContent = ''
+    // Aim at the zoom that would frame the whole leg, capped so a hop across a
+    // harbour doesn't dive to street level. The frame loop eases towards it, so
+    // a long passage opens out and the next short leg draws back in gradually
+    // instead of the view jumping between legs.
+    const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lon]))
+    at.zoomTarget = Math.min(15, at.map.getBoundsZoom(bounds, false, L.point(50, 50)))
+    // Nothing to ease from on the first leg: start there.
+    if (!at.zoom) {
+      at.zoom = at.zoomTarget
+      at.map.setView([points[0].lat, points[0].lon], at.zoom, { animate: false })
+    }
+    pbEnsureBoat(points[0])
+    // Warm the next trip's track while this one plays, so the pause in port
+    // isn't spent waiting on InfluxDB.
+    if (at.trips[k + 1]) {
+      pbTrack(at.trips[k + 1])
+    }
+    return true
+  }
+  pbFinish()
+  return false
+}
+
+function pbFinish () {
+  if (!pb) {
+    return
+  }
+  pb.done = true
+  pb.playing = false
+  if (pb.boat) {
+    pb.boat.setOpacity(0.85)
+  }
+  $('#pb-status').textContent = pb.index < 0 ? t('playbackNoTrack') : t('playbackDone')
+  // The progress bar measures trip durations but advances over track spans,
+  // which start at the first logged fix — a trip whose logging began late would
+  // otherwise leave the bar a hair short of the end. It is finished; say so.
+  $('#pb-fill').style.width = pb.index < 0 ? '0%' : '100%'
+  pbRenderToggle()
+  // Pull back over the whole passage that was drawn, so the closing picture is
+  // the story of the cruise rather than wherever the boat happened to stop. A
+  // flight rather than a jump, to match the easing during playback.
+  if (pb.drawn && pb.drawn.length) {
+    pb.map.flyToBounds(L.latLngBounds(pb.drawn), { padding: [30, 30], duration: 1.6 })
+  }
+}
+
+// The boat: a heading-rotated symbol with a floater pinned beside it carrying
+// the live readout. The glyph rotates inside the icon so the floater stays
+// upright and legible.
+//
+// The icon's markup is built once and afterwards only its text and transform are
+// written. Rebuilding the divIcon each frame (setIcon) tears down and recreates
+// the whole marker element sixty times a second, which both stutters visibly and
+// pushes frame times past the delta clamp in pbFrame — playback then drags along
+// slower than the speed control claims.
+function pbEnsureBoat (p) {
+  if (pb.boat) {
+    return
+  }
+  const icon = L.divIcon({
+    className: 'pb-boat-icon',
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+    html:
+      '<div class="pb-boat">' +
+      '<svg class="pb-glyph" viewBox="0 0 24 24" width="24" height="24">' +
+      '<path d="M12 1 L19 22 L12 18 L5 22 Z" fill="currentColor" stroke="#fff" ' +
+      'stroke-width="1.5" stroke-linejoin="round"/></svg>' +
+      '<div class="pb-float">' +
+      `<div class="pb-row pb-live"><span class="pb-k">STW</span><span class="pb-v pb-stw">–</span></div>` +
+      `<div class="pb-row pb-live"><span class="pb-k">${escapeHtml(t('tripMeter'))}</span>` +
+      '<span class="pb-v pb-trip">–</span></div>' +
+      `<div class="pb-motor" hidden>${escapeHtml(t('motor'))}</div>` +
+      '<div class="pb-port" hidden></div>' +
+      '</div></div>'
+  })
+  pb.boat = L.marker([p.lat, p.lon], {
+    icon, interactive: false, keyboard: false, zIndexOffset: 1000
+  }).addTo(pb.map)
+  const el = pb.boat.getElement()
+  pb.el = {
+    glyph: el.querySelector('.pb-glyph'),
+    stw: el.querySelector('.pb-stw'),
+    trip: el.querySelector('.pb-trip'),
+    motor: el.querySelector('.pb-motor'),
+    port: el.querySelector('.pb-port'),
+    live: [...el.querySelectorAll('.pb-live')]
+  }
+}
+
+// In port the readout gives way to the place name; under way it shows speed, the
+// running distance for the whole selection, and an engine badge when the motor
+// was on. Values are only written when they change, so a frame that moves the
+// boat a few metres doesn't touch the DOM at all.
+function pbSetBoat (latlng, bearing, p, portLabel) {
+  pb.boat.setLatLng(latlng)
+  const e = pb.el
+  const deg = Math.round(bearing)
+  if (deg !== pb.lastDeg) {
+    e.glyph.style.transform = `rotate(${deg}deg)`
+    pb.lastDeg = deg
+  }
+  const inPort = portLabel != null
+  if (inPort !== pb.lastInPort) {
+    e.live.forEach((r) => { r.hidden = inPort })
+    e.port.hidden = !inPort
+    pb.lastInPort = inPort
+    if (!inPort) {
+      pb.lastStw = pb.lastTrip = pb.lastMotor = null
+    }
+  }
+  if (inPort) {
+    if (portLabel !== pb.lastPort) {
+      e.port.textContent = portLabel
+      pb.lastPort = portLabel
+    }
+    e.motor.hidden = true
+    return
+  }
+  const stw = p && p.stw != null ? `${n(toKnots(p.stw), 1)} kn` : '–'
+  if (stw !== pb.lastStw) {
+    e.stw.textContent = stw
+    pb.lastStw = stw
+  }
+  const trip = `${n(pb.meters / 1852, 1)} NM`
+  if (trip !== pb.lastTrip) {
+    e.trip.textContent = trip
+    pb.lastTrip = trip
+  }
+  const motor = !!(p && p.motor)
+  if (motor !== pb.lastMotor) {
+    e.motor.hidden = !motor
+    pb.lastMotor = motor
+  }
+}
+
+// One animation step. The virtual clock advances by real elapsed time scaled by
+// the compression factor, so the speed control and a slow device both stay
+// honest; every track step the clock passes is drawn as a trail segment and
+// added to the trip meter.
+function pbFrame (now) {
+  if (!pb) {
+    return
+  }
+  // Paused or finished: let the loop die rather than spin doing nothing. It is
+  // started again by pbLoop when the user resumes or replays.
+  if (!pb.playing) {
+    pb.raf = 0
+    return
+  }
+  // Clamped so a backgrounded tab (no frames, then one huge delta) resumes where
+  // it left off instead of jumping a leg ahead.
+  const dt = Math.min(250, now - pb.last)
+  pb.last = now
+  // Resting in port between two trips.
+  if (pb.pauseLeft > 0) {
+    pb.pauseLeft -= dt
+    if (pb.pauseLeft <= 0) {
+      pb.pauseLeft = 0
+      pbStartTrip(pb.index + 1)
+    }
+    pb.raf = requestAnimationFrame(pbFrame)
+    return
+  }
+
+  const points = pb.points
+  if (points.length < 2) {
+    pb.raf = requestAnimationFrame(pbFrame)
+    return
+  }
+  // Virtual milliseconds per real millisecond.
+  const scale = (3600000 / (PB_SEC_PER_HOUR * 1000)) * pb.speed
+  pb.clock += dt * scale
+  pb.playedMs += dt * scale
+
+  while (pb.i < points.length - 1 && points[pb.i + 1].t <= pb.clock) {
+    pbDrawStep(points[pb.i], points[pb.i + 1])
+    pb.i++
+  }
+
+  const a = points[pb.i]
+  const b = points[Math.min(pb.i + 1, points.length - 1)]
+  const span = b.t - a.t
+  const f = span > 0 ? Math.max(0, Math.min(1, (pb.clock - a.t) / span)) : 0
+  const lat = a.lat + (b.lat - a.lat) * f
+  const lon = a.lon + (b.lon - a.lon) * f
+  pbSetBoat([lat, lon], pbBearing(a, b), f < 0.5 ? a : b)
+  // Follow the boat every frame rather than panning in jumps: a continuous
+  // setView reads as the chart sliding under a fixed boat. The zoom eases
+  // towards the leg's target on an exponential curve, framed in elapsed time so
+  // it glides at the same rate whatever the frame rate.
+  pb.zoom += (pb.zoomTarget - pb.zoom) * (1 - Math.exp(-dt / 600))
+  pb.map.setView([lat, lon], pb.zoom, { animate: false })
+  pbRenderClock(a.t + (b.t - a.t) * f)
+
+  // Trip over: rest in port, then pick up the next one.
+  if (pb.i >= points.length - 1 && pb.clock >= points[points.length - 1].t) {
+    const trip = pb.trips[pb.index]
+    const next = pb.trips[pb.index + 1]
+    const label = placeOf(trip, 'stop') || null
+    const pause = pbPauseAfter(trip, next)
+    if (!next) {
+      pbFinish()
+      pb.raf = requestAnimationFrame(pbFrame)
+      return
+    }
+    pbSetBoat([lat, lon], 0, null,
+      `${label ? label + ' · ' : ''}${pause >= PB_NIGHT_PAUSE_MS ? t('overnight') : t('inPort')}`)
+    pb.pauseLeft = pause / pb.speed
+    // Idle the frame loop until the next trip's points are in: without this the
+    // finished trip's tail would replay and schedule a second pause.
+    pb.points = []
+  }
+  pb.raf = requestAnimationFrame(pbFrame)
+}
+
+// Speed is quantised into a few bands so consecutive steps at a similar speed
+// extend one polyline instead of each adding their own. A trip is ~600 steps and
+// a fortnight's cruise a dozen trips; one SVG path per step would be tens of
+// thousands of elements and the map would crawl. At this many bands the
+// heat-line still reads as continuous.
+const PB_SPEED_BANDS = 8
+
+// Band -1 is "speed unknown", kept apart from the slowest band so a dropout is
+// drawn grey rather than passed off as a crawl.
+function pbBand (s) {
+  if (s == null) {
+    return -1
+  }
+  if (pb.hi <= pb.lo) {
+    return 0
+  }
+  const f = (s - pb.lo) / (pb.hi - pb.lo)
+  return Math.max(0, Math.min(PB_SPEED_BANDS - 1, Math.floor(f * PB_SPEED_BANDS)))
+}
+
+// Lay down the trail behind the boat and add the step's ground distance to the
+// trip meter. Colour is scaled to the current trip's own speed range, the same
+// way the detail map's heat-line is.
+function pbDrawStep (a, b) {
+  const s = a.sog != null && b.sog != null ? (a.sog + b.sog) / 2 : (a.sog != null ? a.sog : b.sog)
+  const band = pbBand(s)
+  if (pb.seg && pb.seg.band === band) {
+    pb.seg.line.addLatLng([b.lat, b.lon])
+  } else {
+    const mid = band < 0 ? null : pb.lo + ((pb.hi - pb.lo) * (band + 0.5)) / PB_SPEED_BANDS
+    const line = L.polyline([[a.lat, a.lon], [b.lat, b.lon]], {
+      color: sogColor(mid, pb.lo, pb.hi), weight: 3, opacity: 0.9
+    }).addTo(pb.map)
+    pb.seg = { band, line }
+  }
+  pb.meters += pbLegMeters(pb.map, a, b)
+  pb.drawn = pb.drawn || []
+  pb.drawn.push([a.lat, a.lon], [b.lat, b.lon])
+}
+
+function pbRenderClock (tMs) {
+  // Only to the minute, so this is a DOM write once a minute of ship's time
+  // rather than on every frame.
+  const label = `${fmtDate(tMs)} ${fmtTime(tMs)}`
+  if (label !== pb.lastClock) {
+    $('#pb-clock').textContent = label
+    pb.lastClock = label
+  }
+  const done = Math.max(0, Math.min(1, pb.playedMs / (pb.totalMs || 1)))
+  $('#pb-fill').style.width = `${(done * 100).toFixed(1)}%`
+}
+
+function pbRenderToggle () {
+  const b = $('#pb-toggle')
+  b.textContent = pb.done ? t('replay') : (pb.playing ? t('pause') : t('play'))
+}
+
+function pbRenderSpeeds () {
+  const box = $('#pb-speeds')
+  box.innerHTML = ''
+  PB_SPEEDS.forEach((s) => {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.className = 'year-chip' + (s === pb.speed ? ' on' : '')
+    b.textContent = `${n(s, s % 1 ? 1 : 0)}×`
+    b.addEventListener('click', () => {
+      if (!pb) {
+        return
+      }
+      pb.speed = s
+      pbRenderSpeeds()
+    })
+    box.appendChild(b)
+  })
+}
+
 // ---- helpers -------------------------------------------------------------
 
 function showView (which) {
   $('#list-view').hidden = which !== 'list'
   $('#detail-view').hidden = which !== 'detail'
-  // Tear the map down when leaving the detail, so its tile layers and timers
-  // don't linger in the hidden view.
+  $('#playback-view').hidden = which !== 'playback'
+  // Tear the maps down when leaving their view, so tile layers and timers don't
+  // linger hidden.
   if (which !== 'detail') {
     teardownTrack()
+  }
+  if (which !== 'playback') {
+    pbTeardown()
   }
 }
 
@@ -1094,6 +1626,31 @@ function applyStatic () {
 }
 
 $('#back-btn').addEventListener('click', loadList)
+$('#pb-back').addEventListener('click', loadList)
 $('#scan-btn').addEventListener('click', runScan)
+$('#pb-open').addEventListener('click', () => {
+  const from = $('#pb-from').value
+  const to = $('#pb-to').value
+  if (!from || !to) {
+    setStatus(t('pickDates'), true)
+    return
+  }
+  openPlayback(new Date(from + 'T00:00:00').getTime(), new Date(to + 'T23:59:59').getTime())
+})
+$('#pb-toggle').addEventListener('click', () => {
+  if (!pb) {
+    return
+  }
+  if (pb.done) {
+    openPlayback(pb.from, pb.to)
+    return
+  }
+  pb.playing = !pb.playing
+  pbRenderToggle()
+  // The loop stops itself when paused, so resuming has to start it again.
+  if (pb.playing) {
+    pbLoop()
+  }
+})
 applyStatic()
 loadList()

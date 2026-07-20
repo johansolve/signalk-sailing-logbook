@@ -52,6 +52,12 @@ app lists your trips and produces a ready-to-paste logbook entry for each one.
   date range, using the exact same detection logic as live.
 - **Web app** with a trip list, a detail view, editable place names, per-maneuver
   deletion, and a one-click plain-text logbook entry to copy.
+- **Passage playback**: replays the trips between two dates as an animation. The
+  boat follows its recorded track drawing a speed-coloured trail, the view eases
+  its zoom to each leg, and it rests in each port on the way (longer overnight).
+  A readout beside the boat shows speed through the water, an engine badge under
+  power, and a trip meter over the whole selected range. An hour under way plays
+  in two seconds, adjustable 0.5×–4×.
 - **Season view**: the trip list is filtered by year (defaulting to the most
   recent season with trips, linkable as `?year=`) and topped with that season's
   totals — trips, distance, time under way, tacks/gybes and time under engine.
