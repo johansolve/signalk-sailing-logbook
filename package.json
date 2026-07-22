@@ -7,7 +7,7 @@
   "files": [
     "plugin/",
     "public/",
-    "docs/screenshot.png",
+    "docs/",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -25,14 +25,14 @@
     "displayName": "Sailing Logbook",
     "appIcon": "logo.svg",
     "screenshots": [
+      "docs/playback.png",
       "docs/screenshot.png"
     ],
     "requires": [
       "signalk-to-influxdb"
     ],
     "recommends": [
-      "signalk-derived-engine-state",
-      "signalk-alternator-engine-on"
+      "@meri-imperiumi/signalk-alternator-engine-on"
     ]
   },
   "signalk-plugin-enabled-by-default": false,
