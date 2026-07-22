@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-07-23
+
+### Changed
+- Reworked the plugin description (shown in the Signal K app store and on npm) to
+  lead with passage playback and in-browser video export.
+
 ## [0.9.0] - 2026-07-21
 
 ### Added
