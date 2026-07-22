@@ -97,7 +97,7 @@ module.exports = function (app) {
       },
       engineAware: {
         type: 'boolean',
-        title: 'Use alternator temperature and charge current to detect engine-on periods (ignore maneuvers made under engine, flag motoring trips)',
+        title: 'Use engine state (from the path below) to drop maneuvers made under engine and flag motoring trips',
         default: true
       },
       engineStatePath: {
