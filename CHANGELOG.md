@@ -25,6 +25,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   offers the camera roll; elsewhere it downloads. Needs a browser with WebCodecs
   (Chrome, Edge, or Safari 17+); the button explains itself where it is missing.
 
+### Changed
+- `dbPath` now defaults to the plugin's own data directory instead of a fixed
+  path. If you relied on the old default, set `dbPath` explicitly to keep the
+  existing database.
+
 ## [0.8.0] - 2026-07-20
 
 ### Added

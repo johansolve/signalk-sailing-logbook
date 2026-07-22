@@ -10,8 +10,11 @@ app lists your trips and produces a ready-to-paste logbook entry for each one.
 Its standout is the map. Every trip is drawn on a speed-coloured chart, and a
 whole passage — a weekend, a two-week cruise — **plays back as an animation**:
 the boat sails its own track, pausing in each port along the way. That playback
-**saves straight to an MP4**, rendered frame by frame **entirely in your browser
-— even on an iPhone — with no server-side processing at all.**
+**can be saved straight to an MP4**, rendered frame by frame **entirely in your
+browser** — any browser with the **WebCodecs API**, even Safari on an iPhone —
+**with no server-side processing at all.**
+
+![Passage playback: the boat sailing its own speed-coloured track on the chart, a readout beside it showing speed and trip distance, with the playback controls below](docs/playback.png)
 
 ![The web app: a trip detail with the speed-coloured track map, the timeline scrubber and its info panel, free-text notes, hourly weather and the maneuver list](docs/screenshot.png)
 
@@ -93,17 +96,18 @@ the boat sails its own track, pausing in each port along the way. That playback
   native module to compile.
 - **A `propulsion.<n>.state` provider** (`started` / `stopped`) for the
   motoring/sailing distinction. The logbook reads this path from InfluxDB; it has
-  no built-in engine detection. Any of these works:
-  - [`signalk-derived-engine-state`](https://github.com/johansolve/signalk-derived-engine-state)
-    — companion plugin (install from GitHub); infers engine state from alternator
-    temperature, charge current and wind-vs-speed, and also backfills history.
-    **Recommended.**
-  - [`@meri-imperiumi/signalk-alternator-engine-on`](https://www.npmjs.com/package/@meri-imperiumi/signalk-alternator-engine-on)
-    — infers it from alternator power.
+  no built-in engine detection. For example:
   - Native **NMEA 2000 engine data** (PGN 127489), if you have an engine gateway.
+  - [`@meri-imperiumi/signalk-alternator-engine-on`](https://www.npmjs.com/package/@meri-imperiumi/signalk-alternator-engine-on)
+    — infers it from alternator power, for a boat with no engine data on the bus.
+
+  (There is also [`signalk-derived-engine-state`](https://github.com/johansolve/signalk-derived-engine-state),
+  the author's own more elaborate take — alternator temperature, charge current
+  and wind-vs-speed, with history backfill — but it was built around one specific
+  boat, so treat it as a curiosity rather than a drop-in.)
 
   Without a provider the plugin still works; trips just aren't classified as
-  motoring and harbour turns under engine may be counted as maneuvers.
+  motoring and harbour turns under engine may be counted as tack/gybe maneuvers.
 
 ## Install
 
@@ -115,14 +119,14 @@ cd ~/.signalk && npm install ../signalk-sailing-logbook   # adds a file: depende
 ```
 
 Then enable **Sailing Logbook** in the Signal K plugin config and restart the
-server. The SQLite file defaults to `/storage/sailing-logbook/logbook.sqlite`;
-point `dbPath` at a writable location (ideally an SSD, not the SD card).
+server. The SQLite file defaults to the plugin's own data directory; set `dbPath`
+to point it elsewhere (ideally an SSD, if your data directory sits on an SD card).
 
 ## Configuration
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `dbPath` | `/storage/sailing-logbook/logbook.sqlite` | SQLite file location |
+| `dbPath` | (plugin data dir) | SQLite file location; blank uses the plugin's data directory |
 | `startKnots` / `stopKnots` | 0.5 / 0.3 | SOG thresholds to start / stop a trip |
 | `startMinSeconds` / `stopMinSeconds` | 180 / 600 | how long the condition must hold |
 | `minNewTackSeconds` | 90 | min time on the new tack for a maneuver to count |

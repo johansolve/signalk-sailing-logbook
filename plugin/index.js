@@ -12,6 +12,7 @@
  * Retrospective scanning replays InfluxDB history through the same machine.
  */
 
+const path = require('path')
 const dbLib = require('./lib/db')
 const influxLib = require('./lib/influx')
 const geocode = require('./lib/geocode')
@@ -48,7 +49,8 @@ module.exports = function (app) {
       dbPath: {
         type: 'string',
         title: 'SQLite file path',
-        default: '/storage/sailing-logbook/logbook.sqlite'
+        description: "Leave blank to use the plugin's data directory. Point it at an SSD if that sits on an SD card.",
+        default: ''
       },
       startKnots: {
         type: 'number',
@@ -739,7 +741,7 @@ module.exports = function (app) {
   plugin.start = function (opts) {
     options = Object.assign(
       {
-        dbPath: '/storage/sailing-logbook/logbook.sqlite',
+        dbPath: '',
         startKnots: 0.5,
         stopKnots: 0.3,
         startMinSeconds: 180,
@@ -764,7 +766,9 @@ module.exports = function (app) {
     )
     geocodeEnabled = options.geocode !== false
 
-    db = dbLib.open(options.dbPath)
+    // Default to the plugin's own data directory when unset, rather than any
+    // one boat's storage layout.
+    db = dbLib.open(options.dbPath || path.join(app.getDataDirPath(), 'logbook.sqlite'))
     // Migrate pre-registry manual place names into the shared places table once.
     seedPlacesOnce()
     influx = influxLib.makeInflux({
