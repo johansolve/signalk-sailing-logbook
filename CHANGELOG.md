@@ -10,6 +10,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Reworked the plugin description (shown in the Signal K app store and on npm) to
   lead with passage playback and in-browser video export.
 
+### Fixed
+- A trip now closes itself after the boat has lain still for the stop time, even
+  at a quay where GPS jitter briefly lifts SOG over the stop threshold. Live
+  detection now feeds the trip detector 30 s SOG means, the same smoothing the
+  retrospective scan already used, instead of the raw signal whose noise spikes
+  kept resetting the stop timer and could leave a trip open indefinitely.
+
 ## [0.9.0] - 2026-07-21
 
 ### Added

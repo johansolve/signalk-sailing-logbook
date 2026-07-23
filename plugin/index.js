@@ -22,6 +22,17 @@ const { fromStateSeries } = require('./lib/engine')
 
 const NM = 1852 // metres per nautical mile
 
+// Live SOG is smoothed into fixed 30 s means before it reaches the trip
+// detector, matching exactly how the retrospective scan feeds it (influx
+// sogSeries: mean(value) GROUP BY time(30s)). Raw ~2 Hz SOG jitters over the
+// stop threshold at the quay, which would forever reset the stop timer and
+// leave a trip open; the mean does not. Buckets are epoch-aligned like
+// InfluxDB's, so a given wall-clock window yields the same sample live and
+// retrospectively. This is kept in-memory rather than polled from InfluxDB so
+// live detection stays independent of it (a down or lagging InfluxDB must not
+// stop trips being logged).
+const SOG_BUCKET_MS = 30000
+
 module.exports = function (app) {
   const plugin = {}
   let db = null
@@ -36,6 +47,10 @@ module.exports = function (app) {
   let liveEngineState = null // last propulsion.<n>.state value we've seen
   let liveEngineOnSince = null // ms when it last changed to 'started', for the gate
   let geocodeEnabled = true
+  // Accumulator for the current 30 s SOG mean fed to the trip detector.
+  let sogBucketStart = null // epoch-aligned start of the bucket being filled (ms)
+  let sogBucketSum = 0
+  let sogBucketCount = 0
 
   plugin.id = 'signalk-sailing-logbook'
   plugin.name = 'Sailing Logbook'
@@ -182,6 +197,31 @@ module.exports = function (app) {
     const pos = positionNow() || {}
     completeTripAsync(tripId, trip.start_time, stoppedAt, pos)
     app.setPluginStatus(`Trip ended ${new Date(stoppedAt).toISOString()}`)
+  }
+
+  // Accumulate raw SOG into epoch-aligned 30 s means and feed the trip detector
+  // one mean per bucket, mirroring the retrospective scan. A bucket is flushed
+  // when the first sample of the next bucket arrives, so the detector sees the
+  // same smoothed series live and retrospectively. The in-progress bucket lags
+  // by up to 30 s, which is immaterial next to the 3/10 min start/stop hysteresis.
+  function feedSog (now, sog) {
+    if (Number.isNaN(sog)) {
+      return // a bad sample must skip, not poison the whole bucket's mean
+    }
+    const bucket = Math.floor(now / SOG_BUCKET_MS) * SOG_BUCKET_MS
+    if (sogBucketStart != null && bucket !== sogBucketStart) {
+      tripDetector.feed(
+        sogBucketStart,
+        sogBucketSum / sogBucketCount,
+        onTripStart,
+        onTripStop
+      )
+      sogBucketSum = 0
+      sogBucketCount = 0
+    }
+    sogBucketStart = bucket
+    sogBucketSum += sog
+    sogBucketCount += 1
   }
 
   async function completeTripAsync (tripId, startMs, stopMs, stopPos) {
@@ -815,7 +855,7 @@ module.exports = function (app) {
         ;(delta.updates || []).forEach((u) => {
           ;(u.values || []).forEach((v) => {
             if (v.path === 'navigation.speedOverGround' && typeof v.value === 'number') {
-              tripDetector.feed(now, v.value, onTripStart, onTripStop)
+              feedSog(now, v.value)
             } else if (v.path === 'navigation.speedThroughWater' && typeof v.value === 'number') {
               lastSTW = v.value
             } else if (v.path === 'environment.wind.angleTrueWater' && typeof v.value === 'number') {
@@ -857,6 +897,10 @@ module.exports = function (app) {
     lastSTW = null
     liveEngineState = null
     liveEngineOnSince = null
+    // Discard the partial SOG bucket; the mean must not straddle a restart.
+    sogBucketStart = null
+    sogBucketSum = 0
+    sogBucketCount = 0
   }
 
   // ---- HTTP: read via signalKApiRoutes, writes/scan via registerWithRouter --
