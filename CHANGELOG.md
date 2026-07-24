@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-07-24
+
+### Added
+- **Two more video shapes.** A widescreen 16:9 and a tall 9:16 for phones join the
+  squarer 3:4, 1:1 and 4:3, for a clip that has to fit a widescreen player or a
+  phone-story frame.
+- **Separate Download and Share buttons** once a video is rendered, each with its
+  own icon, in place of the single button that guessed which you wanted. On a
+  computer the film downloads; where the browser offers a share sheet (a phone, or
+  desktop Chrome) Share sits beside it.
+
+### Changed
+- Shortened the wording under "Save as video".
+
+### Fixed
+- **Playback no longer zooms in too far on a short passage**, which made the boat
+  race across the frame. Every leg is now framed no tighter than a fixed patch of
+  sea, the same in the live view and in every video shape whatever its aspect
+  ratio, so the boat keeps a readable pace however short the trip.
+- On a computer a rendered video now downloads instead of only offering a share
+  sheet, which on most desktops had no way to save the file to disk.
+
 ## [0.9.1] - 2026-07-23
 
 ### Changed

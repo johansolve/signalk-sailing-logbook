@@ -400,6 +400,28 @@ button.danger {
   color: var(--danger);
   border-color: var(--danger);
 }
+/* The two result buttons wrap as a unit, so a narrow row breaks them onto the
+   next line together rather than splitting them. */
+.ex-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+.ex-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+/* The display rules above outrank the browser's [hidden] rule, so hiding needs
+   to be restated at this specificity. */
+.ex-actions[hidden],
+.ex-action[hidden] {
+  display: none;
+}
+.ex-action .ic {
+  width: 1.15em;
+  height: 1.15em;
+  fill: currentColor;
+}
 .back {
   background: transparent;
   color: var(--accent);

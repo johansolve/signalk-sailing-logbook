@@ -21,12 +21,16 @@ const EX_TITLE_S = 2.5
 const EX_ARRIVAL_S = 2
 // Fade of the title, in seconds.
 const EX_FADE_S = 0.5
-// Squarer than the usual video shapes on purpose: a chart is two-dimensional and
-// a 16:9 letterbox throws away most of the sea a passage runs through.
+// The squarer shapes lead on purpose: a chart is two-dimensional and a 16:9
+// letterbox throws away most of the sea a passage runs through. The 16:9 pair is
+// offered anyway for where a clip has to fit a widescreen or a phone-story frame.
+// Listed tallest to widest.
 const EX_SIZES = {
+  mobile: { w: 1080, h: 1920, label: '9:16' },
   portrait: { w: 1080, h: 1440, label: '3:4' },
   square: { w: 1080, h: 1080, label: '1:1' },
-  landscape: { w: 1440, h: 1080, label: '4:3' }
+  landscape: { w: 1440, h: 1080, label: '4:3' },
+  wide: { w: 1920, h: 1080, label: '16:9' }
 }
 // Target bits per pixel per frame. Chosen so a 1080×1440 clip lands near
 // 2.5 Mbit/s — proven indistinguishable from the old 8 Mbit/s at a full crop.
@@ -235,6 +239,25 @@ function exSample (leg, frac) {
   }
 }
 
+// The cap is anchored to a fixed square patch of sea, ~0.14° on a side, projected
+// as a pixel-square (its east-west span widened by 1 / cos lat) so the fit depends
+// only on the shorter canvas dimension, not on the aspect ratio, then re-fitted
+// around each leg's own centre. Mirrors the live view.
+const EX_MAX_FRAME_SPAN = 0.143
+
+// The largest zoom at which the box still fits the w×h canvas with its margin.
+function exFitZoom (box, w, h) {
+  const pad = 0.82
+  for (let z = 19; z >= 3; z -= 0.25) {
+    const dx = Math.abs(exLonX(box.maxLon, z) - exLonX(box.minLon, z)) * EX_TILE
+    const dy = Math.abs(exLatY(box.minLat, z) - exLatY(box.maxLat, z)) * EX_TILE
+    if (dx <= w * pad && dy <= h * pad) {
+      return z
+    }
+  }
+  return 3
+}
+
 // The zoom that frames a whole leg in this canvas, capped like the live view so
 // a hop across a harbour doesn't dive to street level.
 function exZoomFor (points, w, h) {
@@ -248,19 +271,20 @@ function exZoomFor (points, w, h) {
     minLon = Math.min(minLon, p.lon)
     maxLon = Math.max(maxLon, p.lon)
   })
-  const pad = 0.82
-  let best = 3
-  for (let z = 19; z >= 3; z -= 0.25) {
-    const dx = Math.abs(exLonX(maxLon, z) - exLonX(minLon, z)) * EX_TILE
-    const dy = Math.abs(exLatY(minLat, z) - exLatY(maxLat, z)) * EX_TILE
-    if (dx <= w * pad && dy <= h * pad) {
-      best = z
-      break
-    }
+  const cLat = (minLat + maxLat) / 2
+  const cLon = (minLon + maxLon) / 2
+  const half = EX_MAX_FRAME_SPAN / 2
+  const halfLon = half / Math.cos(cLat * Math.PI / 180)
+  const refBox = {
+    minLat: cLat - half,
+    maxLat: cLat + half,
+    minLon: cLon - halfLon,
+    maxLon: cLon + halfLon
   }
+  const legZoom = exFitZoom({ minLat, minLon, maxLat, maxLon }, w, h)
   return {
-    zoom: Math.min(15, best),
-    center: { lat: (minLat + maxLat) / 2, lon: (minLon + maxLon) / 2 }
+    zoom: Math.min(exFitZoom(refBox, w, h), legZoom),
+    center: { lat: cLat, lon: cLon }
   }
 }
 
@@ -840,7 +864,7 @@ async function exRun () {
   }
   exBusy = true
   exCancel = false
-  exResultFile = null
+  exResetResult()
   const btn = document.querySelector('#ex-run')
   btn.textContent = t('cancel')
   // The playback shouldn't keep animating and competing for the tile servers
@@ -871,26 +895,21 @@ async function exRun () {
       .replace(/[^\w\-åäöÅÄÖ]+/g, '-').toLowerCase()
     const file = new File([blob], `${name}.mp4`, { type: 'video/mp4' })
     exProgress(1)
-    // The share sheet is what carries a clip to the camera roll on a phone, but
-    // navigator.share needs a live user gesture and the render just spent half a
-    // minute — the gesture is long gone, so sharing here throws silently. Instead
-    // hold the finished file and turn the button into a share button; the tap on
-    // that is a fresh gesture the share sheet accepts. Where files can't be
-    // shared at all (most desktops), just download it now.
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      exResultFile = file
-      document.querySelector('#ex-run').textContent = t('saveVideo')
-      exStatus(t('exportReady'))
-    } else {
-      exDownload(file)
-      document.querySelector('#ex-run').textContent = t('exportVideo')
-      exStatus(t('exportDone')(Math.round(file.size / 1048576)))
-    }
+    // Hold the finished file and offer both ways to keep it as separate choices:
+    // a plain download, and — where the browser has a share sheet — a Share button
+    // beside it (the page can't add a download entry to the sheet itself). Sharing
+    // needs a fresh user gesture and the render just spent half a minute, so it can
+    // only run from a later tap on that button, never straight from here.
+    exResultFile = file
+    document.querySelector('#ex-run').hidden = true
+    document.querySelector('#ex-actions').hidden = false
+    document.querySelector('#ex-share').hidden = !(navigator.canShare && navigator.canShare({ files: [file] }))
+    exStatus(t('exportReadyChoose'))
   } catch (e) {
     exStatus(t('error') + e.message)
-    document.querySelector('#ex-run').textContent = t('exportVideo')
   } finally {
     exBusy = false
+    document.querySelector('#ex-run').textContent = t('exportVideo')
     pb && (pb.playing = wasPlaying)
     if (pb && wasPlaying) {
       pbRenderToggle()
@@ -899,33 +918,47 @@ async function exRun () {
   }
 }
 
+// Download the held file, then return the panel to idle.
+function exDownloadResult () {
+  const file = exResultFile
+  exDownload(file)
+  exStatus(t('exportDone')(Math.round(file.size / 1048576)))
+  exResetResult()
+}
+
 // Share the finished file on the fresh gesture of a tap. Dismissing the sheet
-// (AbortError) leaves the button as it is, so it can be tapped again; any other
-// failure falls back to a download so the film is never lost.
+// (AbortError) leaves the buttons as they are, so it can be tapped again; any
+// other failure falls back to a download so the film is never lost.
 async function exShareResult () {
   const file = exResultFile
   try {
     await navigator.share({ files: [file] })
-    exResultFile = null
-    document.querySelector('#ex-run').textContent = t('exportVideo')
     exStatus(t('exportShared'))
+    exResetResult()
   } catch (e) {
     if (e && e.name === 'AbortError') {
       return
     }
     exDownload(file)
-    exResultFile = null
-    document.querySelector('#ex-run').textContent = t('exportVideo')
     exStatus(t('exportDone')(Math.round(file.size / 1048576)))
+    exResetResult()
   }
 }
 
-// Drop any held result and return the button to idle, so changing a setting
-// after a render doesn't leave a stale film behind the share button.
+// Drop any held result, hide its buttons and clear the progress bar, returning
+// the panel to idle.
+function exResetResult () {
+  exResultFile = null
+  document.querySelector('#ex-run').hidden = false
+  document.querySelector('#ex-actions').hidden = true
+  exProgress(0)
+}
+
+// Drop a held result on a settings change, so a stale film isn't left behind the
+// buttons after the size it was rendered at has moved on.
 function exInvalidateResult () {
   if (exResultFile) {
-    exResultFile = null
-    document.querySelector('#ex-run').textContent = t('exportVideo')
+    exResetResult()
     exStatus('')
   }
 }
@@ -940,18 +973,24 @@ function exInit () {
     btn.disabled = true
     exStatus(exUnsupportedReason())
   }
-  // One button, three jobs by state: cancel a running render, share a finished
-  // one, or start a new one.
+  // The main button either cancels a running render or starts a new one; the
+  // finished film is kept or shared from its own two buttons instead.
   btn.addEventListener('click', () => {
     if (exBusy) {
       exCancel = true
       return
     }
+    exRun()
+  })
+  document.querySelector('#ex-download').addEventListener('click', () => {
+    if (exResultFile) {
+      exDownloadResult()
+    }
+  })
+  document.querySelector('#ex-share').addEventListener('click', () => {
     if (exResultFile) {
       exShareResult()
-      return
     }
-    exRun()
   })
 }
 

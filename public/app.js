@@ -31,16 +31,17 @@ const STR = {
     playbackDone: 'Playback finished.', loadingTrack: 'Loading track…',
     playbackNoMap: 'The map library did not load.',
     exportVideoPanel: 'Save as video', exportVideo: 'Save as video', cancel: 'Cancel',
-    exportHint: 'Re-renders the passage frame by frame into an MP4, waiting for every chart tile, so the film is the same however slow the connection is.',
+    exportHint: 'Create a video of the passage (MP4 format).',
     exportFetching: 'Fetching tracks…',
     exportUnsupported: 'This browser cannot encode video (needs WebCodecs — try Chrome or Edge, or Safari 17 and later).',
     exportInsecure: 'Video export needs a secure connection. Open the logbook over its https address rather than the local http one.',
-    exportReady: 'Video ready — tap Save to keep it.',
-    saveVideo: 'Save video',
+    exportReadyChoose: 'Video ready — download or share it.',
+    downloadVideo: 'Download',
+    shareVideo: 'Share',
     exportShared: 'Saved.',
     exportRendering: (s) => `Rendering ${s} s of video…`,
     exportDone: (mb) => `Done — ${mb} MB saved to your downloads.`,
-    size_portrait: 'Portrait', size_square: 'Square', size_landscape: 'Landscape',
+    size_mobile: 'Mobile', size_portrait: 'Portrait', size_square: 'Square', size_landscape: 'Landscape', size_wide: 'Widescreen',
     underWay: '(under way)', loading: 'Loading…', unknown: 'Unknown',
     startPlace: 'Start place', endPlace: 'End place', place: 'Place', savePlaces: 'Save places',
     placeHint: 'A named place is reused for every trip starting or ending within a 250 m radius. Clear a field and save to remove its name.',
@@ -84,16 +85,17 @@ const STR = {
     playbackDone: 'Uppspelningen är klar.', loadingTrack: 'Hämtar spår…',
     playbackNoMap: 'Kartbiblioteket kunde inte laddas.',
     exportVideoPanel: 'Spara som video', exportVideo: 'Spara som video', cancel: 'Avbryt',
-    exportHint: 'Ritar om seglatsen bildruta för bildruta till en MP4 och väntar in varje sjökortsbricka, så filmen blir likadan hur långsam uppkopplingen än är.',
+    exportHint: 'Skapa en video av seglatsen (mp4-format).',
     exportFetching: 'Hämtar spår…',
     exportUnsupported: 'Den här webbläsaren kan inte koda video (kräver WebCodecs — prova Chrome eller Edge, eller Safari 17 och senare).',
     exportInsecure: 'Videoexport kräver säker anslutning. Öppna loggboken via https-adressen istället för den lokala http-adressen.',
-    exportReady: 'Videon är klar — tryck Spara för att behålla den.',
-    saveVideo: 'Spara video',
+    exportReadyChoose: 'Videon är klar — ladda ner eller dela.',
+    downloadVideo: 'Ladda ner',
+    shareVideo: 'Dela',
     exportShared: 'Sparad.',
     exportRendering: (s) => `Renderar ${s} s video…`,
     exportDone: (mb) => `Klart — ${mb} MB sparad bland dina nedladdningar.`,
-    size_portrait: 'Porträtt', size_square: 'Kvadrat', size_landscape: 'Liggande',
+    size_mobile: 'Mobil', size_portrait: 'Porträtt', size_square: 'Kvadrat', size_landscape: 'Liggande', size_wide: 'Bredbild',
     underWay: '(pågår)', loading: 'Laddar…', unknown: 'Okänd',
     startPlace: 'Startplats', endPlace: 'Slutplats', place: 'Plats', savePlaces: 'Spara platser',
     placeHint: 'Ett platsnamn återanvänds för alla trips som startar eller slutar inom 250 m radie. Töm ett fält och spara för att ta bort namnet.',
@@ -1684,11 +1686,28 @@ function pbReframe (center, zoom) {
   pb.map.flyTo(center, zoom, { duration: 0.9 })
 }
 
+// The cap is anchored to a fixed square patch of sea, ~0.14° on a side, the
+// tightest framing at which the boat still crosses the screen at a pace that
+// reads well. It is projected as a pixel-square (its east-west span widened by
+// 1 / cos lat) so the fit depends only on the shorter viewport dimension, not on
+// its aspect ratio, then re-fitted around each leg's own centre and to the
+// current viewport. Apparent boat speed is set purely by the zoom level, which
+// this pins, so the cap holds across cruising grounds and screen sizes alike.
+const PB_MAX_FRAME_SPAN = 0.143
+
 // The zoom that frames a whole leg, capped so a hop across a harbour doesn't
 // dive to street level.
 function pbZoomFor (points) {
   const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lon]))
-  return Math.min(15, pb.map.getBoundsZoom(bounds, false, L.point(50, 50)))
+  const c = bounds.getCenter()
+  const half = PB_MAX_FRAME_SPAN / 2
+  const halfLon = half / Math.cos(c.lat * Math.PI / 180)
+  const refBounds = L.latLngBounds(
+    [c.lat - half, c.lng - halfLon],
+    [c.lat + half, c.lng + halfLon]
+  )
+  const cap = pb.map.getBoundsZoom(refBounds, false, L.point(50, 50))
+  return Math.min(cap, pb.map.getBoundsZoom(bounds, false, L.point(50, 50)))
 }
 
 // Speed is quantised into a few bands so consecutive steps at a similar speed
