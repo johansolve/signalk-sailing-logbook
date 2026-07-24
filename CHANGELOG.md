@@ -23,8 +23,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   race across the frame. Every leg is now framed no tighter than a fixed patch of
   sea, the same in the live view and in every video shape whatever its aspect
   ratio, so the boat keeps a readable pace however short the trip.
-- On a computer a rendered video now downloads instead of only offering a share
-  sheet, which on most desktops had no way to save the file to disk.
+- On a computer a rendered video now offers to download instead of only offering a
+  share sheet, which on most desktops had no way to save the file to disk.
 
 ## [0.9.1] - 2026-07-23
 
