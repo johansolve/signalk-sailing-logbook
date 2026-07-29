@@ -77,4 +77,55 @@ describe('createManeuverDetector', function () {
     }
     assert.equal(events.length, 0)
   })
+
+  it('gates on the median speed, not on a single slow sample', function () {
+    const d = createManeuverDetector({ minTackSeconds: 90, minSpeed: 2 })
+    const events = []
+    const cb = (m) => events.push(m)
+    // A paddle wheel alternating between the true speed and half of it, with the
+    // sample just before the flip landing on a low reading.
+    for (let s = 0; s <= 5; s += 1) {
+      d.feed(at(s), deg(45), s === 5 ? 0.5 : 4, cb)
+    }
+    for (let s = 10; s <= 110; s += 5) {
+      d.feed(at(s), deg(-45), 4, cb)
+    }
+    assert.equal(events.length, 1)
+  })
+
+  it('ignores wind-angle flutter that never moves the running mean across', function () {
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0 })
+    const events = []
+    const cb = (m) => events.push(m)
+    // A masthead unit swinging ±70° about a mean of 60° to starboard: every other
+    // sample reads on the port side, but the boat never changes tack.
+    for (let s = 0; s <= 600; s += 1) {
+      d.feed(at(s), deg(s % 2 ? -10 : 130), 4, cb)
+    }
+    assert.equal(events.length, 0)
+  })
+
+  it('still sees a real tack through that flutter', function () {
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0 })
+    const events = []
+    const cb = (m) => events.push(m)
+    for (let s = 0; s <= 300; s += 1) {
+      d.feed(at(s), deg(s % 2 ? -10 : 130), 4, cb) // mean 60° starboard
+    }
+    for (let s = 301; s <= 600; s += 1) {
+      d.feed(at(s), deg(s % 2 ? 10 : -130), 4, cb) // mean 60° port
+    }
+    assert.equal(events.length, 1)
+    assert.equal(events[0].type, 'tack')
+  })
+
+  it('reads raw samples when smoothing is switched off', function () {
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0, smoothSeconds: 0 })
+    const events = []
+    const cb = (m) => events.push(m)
+    for (let s = 0; s <= 600; s += 1) {
+      d.feed(at(s), deg(s % 2 ? -10 : 130), 4, cb)
+    }
+    assert.ok(events.length > 0, 'unsmoothed flutter registers as maneuvers')
+  })
 })

@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-07-29
+
+### Fixed
+- **A day of false tacks and gybes.** The wind side was read from the raw wind
+  angle, which a masthead unit rolling in old swell swings further and faster
+  than the manoeuvre it is meant to reveal — measured at up to 45° between
+  consecutive samples in light air, with the boat holding its course to within a
+  few degrees. The angle is now averaged over 10 s (circularly, so a run stays a
+  run) before the side is read. On the passage that prompted this, 21 recorded
+  manoeuvres became 3, which is what the crew sailed. Adjustable as
+  `twaSmoothingSeconds`; set it to 0 for the old behaviour.
+- **A real tack could go unrecorded.** The minimum-speed gate compared a single
+  instantaneous reading from a paddle-wheel log that alternates between the true
+  speed and a fraction of it, sampled at the one moment a tack is slowest. It now
+  uses the median over the preceding 30 s. The suppression was silent, so the
+  manoeuvre simply never appeared.
+- **Retrospective scans mistook a dead run for a beat.** History was read as an
+  arithmetic mean of wind angles, and the mean of +179° and −179° is 0°. The scan
+  now samples the angle instead of averaging it, and reads history at the same
+  1 s rate the live path sees, so both paths behave identically.
+
 ## [0.9.2] - 2026-07-24
 
 ### Added

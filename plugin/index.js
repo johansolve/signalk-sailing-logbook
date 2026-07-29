@@ -97,6 +97,11 @@ module.exports = function (app) {
         title: 'Degrees past dead-downwind before a side counts (ignores TWA flutter near a dead run)',
         default: 10
       },
+      twaSmoothingSeconds: {
+        type: 'number',
+        title: 'Average TWA over this many seconds before reading the wind side (rejects masthead swing in a seaway)',
+        default: 10
+      },
       minSailingSpeedKnots: {
         type: 'number',
         title: 'Minimum boat speed (STW, knots) for a maneuver to count (rejects harbour/mooring turns under engine)',
@@ -705,13 +710,15 @@ module.exports = function (app) {
       // derivation logged nothing for this stretch (e.g. a multi-day gap). AWA
       // also flips side on a tack/gybe, so sign-crossing detection still works,
       // just a bit coarser.
-      let angles = await influx.twaSeries(startMs, stopMs, 5)
+      // Sampled at 1 s, the rate the live path sees, so the detector's own
+      // smoothing window spans the same number of samples either way.
+      let angles = await influx.twaSeries(startMs, stopMs, 1)
       let angleSource = 'twa'
       if (!angles.length) {
-        angles = await influx.awaSeries(startMs, stopMs, 5)
+        angles = await influx.awaSeries(startMs, stopMs, 1)
         angleSource = 'awa'
       }
-      const stw = await influx.stwSeries(startMs, stopMs, 5)
+      const stw = await influx.stwSeries(startMs, stopMs, 1)
       const positions = await influx.positionSeries(startMs, stopMs, 15)
       const stwAt = new Map(stw)
       const retroTrip = {
@@ -772,6 +779,7 @@ module.exports = function (app) {
       stopMinSeconds: options.stopMinSeconds,
       minTackSeconds: options.minNewTackSeconds != null ? options.minNewTackSeconds : 90,
       runDeadbandDeg: options.runDeadbandDeg != null ? options.runDeadbandDeg : 10,
+      smoothSeconds: options.twaSmoothingSeconds != null ? options.twaSmoothingSeconds : 10,
       minSpeed: (options.minSailingSpeedKnots != null ? options.minSailingSpeedKnots : 2) * KNOT
     }
   }
@@ -788,6 +796,7 @@ module.exports = function (app) {
         stopMinSeconds: 600,
         minNewTackSeconds: 90,
         runDeadbandDeg: 10,
+        twaSmoothingSeconds: 10,
         minSailingSpeedKnots: 2,
         maneuverEdgeMarginMinutes: 5,
         maneuverEdgeRadiusMeters: 200,

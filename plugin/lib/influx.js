@@ -301,11 +301,15 @@ function makeInflux (config) {
       }
     },
 
-    // Downsampled TWA series (rad) for retrospective maneuver detection.
+    // Downsampled TWA series (rad) for retrospective maneuver detection. Sampled
+    // with first(), not mean(): an arithmetic mean of angles is wrong wherever the
+    // series wraps, and on a run it is catastrophically so — the mean of +179° and
+    // -179° is 0°, turning a dead run into a beat. The detector averages the
+    // samples circularly itself.
     async twaSeries (startMs, stopMs, stepSec) {
       const m = quoteMeasurement(paths.twa)
       const [res] = await run(
-        `SELECT mean("value") AS v FROM "${m}" ` +
+        `SELECT first("value") AS v FROM "${m}" ` +
           `WHERE ${window(startMs, stopMs)} ` +
           `GROUP BY time(${stepSec || 5}s) fill(none)`
       )
@@ -319,7 +323,7 @@ function makeInflux (config) {
     async awaSeries (startMs, stopMs, stepSec) {
       const m = quoteMeasurement(paths.awa)
       const [res] = await run(
-        `SELECT mean("value") AS v FROM "${m}" ` +
+        `SELECT first("value") AS v FROM "${m}" ` +
           `WHERE ${window(startMs, stopMs)} ` +
           `GROUP BY time(${stepSec || 5}s) fill(none)`
       )
