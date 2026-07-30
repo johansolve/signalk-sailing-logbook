@@ -4,9 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.3] - 2026-07-29
+## [0.9.3] - 2026-07-30
+
+### Added
+- **The map follows the timeline when you have zoomed in.** Scrubbing a stretch of
+  the track no longer leaves the boat behind the edge of the frame: as long as the
+  view is zoomed in past the whole-track overview, the point stays centred. At the
+  overview zoom, where the track is visible end to end anyway, the map stays put.
 
 ### Fixed
+- **A trip was anchored where the boat was three minutes after it left**, not
+  where it started. The start time was correctly backdated to when movement began,
+  but the position was read at the moment the start was confirmed, a full
+  `startMinSeconds` later and several hundred metres away. A named place within
+  `placeRadiusMeters` of the mooring was then missed, the trip fell back to its
+  geocoded name, and renaming it planted a second copy of the place. Both ends of
+  a trip now take the position that was current at the reported time. The same
+  correction applies to the stop, where the error was smaller (the boat is nearly
+  stationary through the stop window) but of the same kind.
 - **A day of false tacks and gybes.** The wind side was read from the raw wind
   angle, which a masthead unit rolling in old swell swings further and faster
   than the manoeuvre it is meant to reveal — measured at up to 45° between

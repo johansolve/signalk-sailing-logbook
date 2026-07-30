@@ -41,9 +41,11 @@ browser** â€” any browser with the **WebCodecs API**, even Safari on an iPhone â
   under the map scrubs through the trip, moving a highlight dot along the track
   and updating a fixed info panel with that moment's conditions (SOG/STW,
   TWS/TWD, TWA/AWA, heel, plus an engine badge for the stretches under power);
-  clicking the track or a maneuver jumps the scrubber there. Drag the handle
-  below the map to enlarge it for a closer look. The map tiles need the network;
-  offline, the speed-coloured track still shows on a blank canvas.
+  clicking the track or a maneuver jumps the scrubber there. Zoom in on a stretch
+  and the map follows the slider, keeping the boat centred; at the zoom the whole
+  track is framed at, it stays put. Drag the handle below the map to enlarge it
+  for a closer look. The map tiles need the network; offline, the speed-coloured
+  track still shows on a blank canvas.
 - **Automatic trip detection** from `navigation.speedOverGround` with configurable
   speed thresholds and minimum durations (hysteresis, so brief speed spikes don't
   start a trip and a plugin restart doesn't end one).

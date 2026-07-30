@@ -43,6 +43,11 @@ module.exports = function (app) {
   let maneuverDetector = null
   let currentTripId = null
   let lastPosition = null // { lat, lon }
+  // A trail of recent fixes, [timeMs, lat, lon]. The trip detector reports when
+  // movement began or ended, a whole hysteresis window before we hear about it,
+  // and by then the boat is somewhere else: three minutes out of the anchorage on
+  // a start. The trail lets a trip be anchored where it actually began or ended.
+  let positionTrail = []
   let lastSTW = null // most recent speed through water (m/s), for the maneuver gate
   let liveEngineState = null // last propulsion.<n>.state value we've seen
   let liveEngineOnSince = null // ms when it last changed to 'started', for the gate
@@ -165,6 +170,31 @@ module.exports = function (app) {
     return null
   }
 
+  // Keep the trail reaching back past the longer of the two hysteresis windows,
+  // which is as far as a reported time is ever backdated.
+  function trailWindowMs () {
+    const start = options.startMinSeconds != null ? options.startMinSeconds : 180
+    const stop = options.stopMinSeconds != null ? options.stopMinSeconds : 600
+    return (Math.max(start, stop) + 60) * 1000
+  }
+
+  // Where we were at a given moment: the fix nearest it in time, provided one is
+  // within a minute of it. A time the trail doesn't reach (the plugin restarted
+  // mid-passage, or position deltas have stopped arriving) falls back to the
+  // current position, which is the only estimate left.
+  function positionAt (timeMs) {
+    let best = null
+    let bd = Infinity
+    for (const [t, lat, lon] of positionTrail) {
+      const d = Math.abs(t - timeMs)
+      if (d < bd) {
+        bd = d
+        best = { lat, lon }
+      }
+    }
+    return bd <= 60000 ? best : positionNow()
+  }
+
   function geocodeTrip (tripId, which, lat, lon) {
     if (!geocodeEnabled || lat == null || lon == null) {
       return
@@ -181,7 +211,7 @@ module.exports = function (app) {
   }
 
   function onTripStart (startedAt) {
-    const pos = positionNow() || {}
+    const pos = positionAt(startedAt) || {}
     currentTripId = db.createActiveTrip({
       startTime: startedAt,
       lat: pos.lat,
@@ -199,7 +229,7 @@ module.exports = function (app) {
       return
     }
     const trip = db.getTrip(tripId)
-    const pos = positionNow() || {}
+    const pos = positionAt(stoppedAt) || {}
     completeTripAsync(tripId, trip.start_time, stoppedAt, pos)
     app.setPluginStatus(`Trip ended ${new Date(stoppedAt).toISOString()}`)
   }
@@ -871,6 +901,10 @@ module.exports = function (app) {
               maneuverDetector.feed(now, v.value, lastSTW, onManeuver)
             } else if (v.path === 'navigation.position' && v.value && typeof v.value.latitude === 'number') {
               lastPosition = { lat: v.value.latitude, lon: v.value.longitude }
+              positionTrail.push([now, lastPosition.lat, lastPosition.lon])
+              while (positionTrail.length && now - positionTrail[0][0] > trailWindowMs()) {
+                positionTrail.shift()
+              }
             } else if (v.path === engineStatePath) {
               onEngineState(v.value, now)
             }
@@ -903,6 +937,7 @@ module.exports = function (app) {
     // Drop cached live samples so a restart doesn't seed a new trip with a stale
     // position or speed before fresh deltas arrive.
     lastPosition = null
+    positionTrail = []
     lastSTW = null
     liveEngineState = null
     liveEngineOnSince = null

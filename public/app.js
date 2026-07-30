@@ -142,6 +142,10 @@ const $ = (sel) => document.querySelector(sel)
 // plus its track points so a maneuver-row click can locate the moment on it.
 let trackMap = null
 let trackPoints = []
+// The zoom the whole track was framed at, so the scrubber can tell a view zoomed
+// in on a detail (where the boat would leave the frame, and the map should
+// follow it) from the overview (where the whole track is visible anyway).
+let trackOverviewZoom = null
 // The moving highlight marker driven by the timeline scrubber, the events keyed
 // by the track index nearest each in time (so scrubbing onto one shows its
 // label), and the info-panel columns present for this trip (fixed for its whole
@@ -509,7 +513,7 @@ function renderDetail (data) {
       if (ev.target.closest('.ev-del')) {
         return
       }
-      scrubToEvent(data.events[parseInt(li.getAttribute('data-idx'), 10)], true)
+      scrubToEvent(data.events[parseInt(li.getAttribute('data-idx'), 10)], 'reveal')
     })
   })
 
@@ -677,9 +681,11 @@ function nearestIndexByTime (timeMs) {
 }
 
 // Move the timeline (slider, highlight dot and info panel) to a track index.
-// `pan` (a list-row click, where the map may be scrolled out of view) also
-// brings the map into view and centres it; scrubbing and on-map clicks don't.
-function scrubTo (idx, pan) {
+// `move` says what the map does about it: 'reveal' (a list-row click, where the
+// map may be scrolled out of view) brings it into view and centres it; 'follow'
+// (the slider) keeps the point centred as long as the view is zoomed in past the
+// overview; an on-map click passes nothing and leaves the view where it is.
+function scrubTo (idx, move) {
   if (!trackMap || !trackPoints.length) {
     return
   }
@@ -697,16 +703,20 @@ function scrubTo (idx, pan) {
   if (info) {
     info.innerHTML = infoPanelHtml(p, ev ? maneuverLabel(ev) : null)
   }
-  if (pan) {
+  if (move === 'reveal') {
     trackMap.getContainer().scrollIntoView({ behavior: 'smooth', block: 'center' })
     trackMap.panTo([p.lat, p.lon])
+  } else if (move === 'follow' && trackOverviewZoom != null && trackMap.getZoom() > trackOverviewZoom) {
+    // Unanimated: a drag emits a point every few milliseconds, and an animated
+    // pan would still be gliding towards the previous one when the next arrives.
+    trackMap.setView([p.lat, p.lon], trackMap.getZoom(), { animate: false })
   }
 }
 
 // Scrub to a maneuver by its time.
-function scrubToEvent (ev, pan) {
+function scrubToEvent (ev, move) {
   if (ev) {
-    scrubTo(nearestIndexByTime(ev.time), pan)
+    scrubTo(nearestIndexByTime(ev.time), move)
   }
 }
 
@@ -794,7 +804,7 @@ function drawTrack (host, points, events) {
   L.polyline(latlngs, { color: '#000', opacity: 0.01, weight: 16 })
     .addTo(map)
     .on('click', (e) => {
-      scrubTo(nearestIndexGeo(map, e.latlng, points), false)
+      scrubTo(nearestIndexGeo(map, e.latlng, points))
     })
 
   // Tacks and gybes as small dots in their report colours.
@@ -813,7 +823,7 @@ function drawTrack (host, points, events) {
     })
       .addTo(map)
       .bindTooltip(`${maneuverLabel(e)} · ${fmtTime(e.time)}`)
-      .on('click', () => scrubToEvent(e, false))
+      .on('click', () => scrubToEvent(e))
   })
 
   // Start and end, larger and ringed so they stand out from the heat-line.
@@ -829,6 +839,7 @@ function drawTrack (host, points, events) {
   }).addTo(map)
 
   map.fitBounds(L.latLngBounds(latlngs), { padding: [24, 24] })
+  trackOverviewZoom = map.getZoom()
 
   setupMapResize(host, map)
   buildScrubber(points, events)
@@ -933,10 +944,10 @@ function buildScrubber (points, events) {
     ticks.appendChild(tick)
   })
 
-  slider.oninput = () => scrubTo(parseInt(slider.value, 10), false)
+  slider.oninput = () => scrubTo(parseInt(slider.value, 10), 'follow')
   info.hidden = false
   scrub.hidden = false
-  scrubTo(0, false)
+  scrubTo(0)
 }
 
 async function deleteEvent (eventId, tripId) {
@@ -1826,6 +1837,7 @@ function teardownTrack () {
   }
   trackMap = null
   trackPoints = []
+  trackOverviewZoom = null
   scrubDot = null
   scrubEvents = null
   scrubFields = []
