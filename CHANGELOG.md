@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-07-31
+
+### Added
+- **Every hour of the weather table opens into a graph of itself.** Click an hour
+  and it unfolds a chartplotter-style history: time running down the box, one
+  narrow panel each for STW, TWS and TWD in the table's own column order, drawn
+  from the InfluxDB history at one sample per pixel rather than from the hour's
+  means, and lightly smoothed (a 45 s centred mean) so sensor hair does not bury
+  the shape. Each panel is scaled to
+  its own range for that hour (labelled min / mid / max above it), the box always
+  covers the full hour so every row's minute scale is the same, and a wind
+  veering through north draws as one continuous line instead of falling off the
+  top. It is fetched only when the hour is opened.
+- **A rolling half hour under the timeline.** The scrubber now carries the same
+  three panels, drawn the way the plotter draws them under way: the marker's own
+  moment at the top and the half hour behind it running down, each panel headed
+  by the value at the marker. It redraws from the track already loaded, so
+  dragging the slider costs nothing extra.
+- `GET /trips/:id/series` — the history behind that graph: named channels
+  (`sog`, `stw`, `tws`, `twd`, `twa`, `awa`, `heel`) over a window inside the
+  trip, on one shared time grid. Angles are sampled, never averaged. Read-only,
+  like the rest of the read API.
+
 ## [0.9.3] - 2026-07-30
 
 ### Added

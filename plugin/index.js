@@ -1130,6 +1130,70 @@ module.exports = function (app) {
       res.status(500).json({ error: e.message })
     }
   }
+  // Raw-ish channel history over a window inside the trip, for the detail
+  // graphs. Deliberately generic (and uncached): the caller names the span, the
+  // channels and how fine a grid it wants, so the same route serves any
+  // zoomed-in view of a trip — first user is the per-hour graph under the
+  // weather table. The span is clamped to the trip and the grid to a point
+  // budget, so no query can be widened into a scan of the whole database.
+  const SERIES_FIELDS = ['sog', 'stw', 'tws', 'twd', 'twa', 'awa', 'heel']
+  const SERIES_MAX_POINTS = 1500
+  const SERIES_MIN_STEP_SEC = 5
+  async function seriesHandler (req, res) {
+    const id = tripIdParam(req)
+    if (id == null) {
+      return res.status(400).json({ error: 'invalid id' })
+    }
+    if (dbGone(res)) {
+      return
+    }
+    const trip = db.getTrip(id)
+    if (!trip) {
+      return res.status(404).json({ error: 'not found' })
+    }
+    // Express parses ?fields[toString]=x into an object, and coercing one of
+    // those throws — outside the try below, that would be an unhandled rejection
+    // with the request left hanging. Only a plain string is a value here; an
+    // empty one means the parameter was not given.
+    const asText = (v) => (typeof v === 'string' ? v.trim() : '')
+    // Deduplicated: a repeated channel is one query per repetition, and each is
+    // a full scan of the window.
+    const fields = Array.from(new Set(asText(req.query.fields).split(',')
+      .map((f) => f.trim())
+      .filter((f) => SERIES_FIELDS.includes(f))))
+    if (!fields.length) {
+      return res.status(400).json({ error: `fields must name at least one of ${SERIES_FIELDS.join(',')}` })
+    }
+    const tripStop = trip.stop_time || Date.now()
+    const asInt = (v, fallback) => {
+      const text = asText(v)
+      if (!text) {
+        return fallback
+      }
+      const num = Number(text)
+      return Number.isFinite(num) ? Math.trunc(num) : fallback
+    }
+    const from = Math.max(trip.start_time, asInt(req.query.from, trip.start_time))
+    const to = Math.min(tripStop, asInt(req.query.to, tripStop))
+    if (!(to > from)) {
+      return res.json({ from, to, step: SERIES_MIN_STEP_SEC, points: [] })
+    }
+    // Never finer than the minimum step, and coarser still for a long window so
+    // the response stays within the point budget. A caller may ask for a coarser
+    // grid than that (a graph gains nothing from several samples per pixel) but
+    // not for a finer one.
+    const budgetStep = Math.max(
+      SERIES_MIN_STEP_SEC,
+      Math.ceil((to - from) / 1000 / SERIES_MAX_POINTS)
+    )
+    const step = Math.max(budgetStep, asInt(req.query.step, budgetStep))
+    try {
+      res.json({ from, to, step, points: await influx.channelSeries(from, to, step, fields) })
+    } catch (e) {
+      app.error(`series failed: ${e.message}`)
+      res.status(500).json({ error: e.message })
+    }
+  }
   async function reportHandler (req, res) {
     const id = tripIdParam(req)
     if (id == null) {
@@ -1164,6 +1228,7 @@ module.exports = function (app) {
     router.get('/sailing-logbook/trips/:id/hourly', hourlyHandler)
     router.get('/sailing-logbook/trips/:id/report', reportHandler)
     router.get('/sailing-logbook/trips/:id/track', trackHandler)
+    router.get('/sailing-logbook/trips/:id/series', seriesHandler)
     return router
   }
 
@@ -1175,6 +1240,7 @@ module.exports = function (app) {
     router.get('/trips/:id/hourly', hourlyHandler)
     router.get('/trips/:id/report', reportHandler)
     router.get('/trips/:id/track', trackHandler)
+    router.get('/trips/:id/series', seriesHandler)
 
     // Save a place name (create or rename), anchored at the trip's start/stop and
     // shared with every trip near it. Never deletes; clearing a field is a no-op,

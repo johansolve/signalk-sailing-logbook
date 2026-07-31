@@ -639,6 +639,15 @@ input {
   margin: 0 4px;
 }
 
+/* the rolling half-hour graph under the slider */
+.scrub-graph {
+  margin-top: 0.6rem;
+  max-width: 34rem;
+}
+.scrub-graph + .unit-note {
+  max-width: 34rem;
+}
+
 .events {
   margin-top: 1.5rem;
 }
@@ -680,6 +689,113 @@ h3 {
   font-size: 0.78rem;
   color: var(--muted);
   margin: 0.4rem 0 0;
+}
+
+/* an hour row and the graph row it opens */
+.hour-row {
+  cursor: pointer;
+}
+.hour-row:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.hr-caret {
+  display: inline-block;
+  width: 0.8em;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+.hr-caret::before {
+  content: "▸";
+}
+.hour-row[aria-expanded="true"] .hr-caret {
+  transform: rotate(90deg);
+}
+.hour-graph > td {
+  padding: 0.7rem 0.5rem 0.9rem;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  white-space: normal;
+}
+.hour-graph-box {
+  max-width: 34rem;
+}
+
+/* vertical history graph (public/vgraph.js): time down, one panel per channel */
+.vgraph {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+.vg-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.vg-panel {
+  flex: 1 1 0;
+}
+.vg-axis {
+  flex: 0 0 auto;
+}
+.vg-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vg-sum {
+  font-weight: 500;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* min / mid / max above the plot, pinned to the edges and the centre of it */
+.vg-scale {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 0.3rem;
+  font-size: 0.65rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.vg-scale span:first-child {
+  text-align: left;
+}
+.vg-scale span:nth-child(2) {
+  text-align: center;
+}
+.vg-scale span:last-child {
+  text-align: right;
+}
+.vg-plot {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.vg-svg {
+  display: block;
+}
+.vg-grid line {
+  stroke: var(--line);
+}
+.vg-line, .vg-dot {
+  fill: none;
+  stroke: var(--vg-color, var(--accent));
+  stroke-width: 1.25;
+  stroke-linejoin: round;
+}
+/* Minute labels down the left, each centred on its gridline. */
+.vg-ticks {
+  position: relative;
+  padding-right: 0.3rem;
+}
+.vg-tick {
+  position: absolute;
+  right: 0.3rem;
+  transform: translateY(-50%);
+  font-size: 0.65rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .ev-list {

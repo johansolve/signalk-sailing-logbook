@@ -52,6 +52,11 @@ const STR = {
     hourlyWeather: 'Hourly weather', hr: 'Hr', heel: 'Heel',
     unitNote: 'Mean with p10–p90 range; TWA/AWA show the dominant side (S/P); TWD is the circular mean with ±angular deviation.',
     noWeather: 'No weather statistics (trip has no end time or no data).',
+    trendNote: 'The half hour before the marker, newest at the top.',
+    hourGraph: 'Show the hour minute by minute',
+    hourGraphNote: 'The hour minute by minute, newest at the bottom. Each column is scaled to its own range for this hour.',
+    noHourData: 'No data logged for this hour.',
+    minutes: 'min',
     tack: 'Tack', gybe: 'Gybe',
     gybeSing: 'gybe', gybePlur: 'gybes', tackSing: 'tack', tackPlur: 'tacks',
     andWord: 'and', noManeuvers: 'No gybes or tacks',
@@ -106,6 +111,11 @@ const STR = {
     hourlyWeather: 'Timväder', hr: 'Tim', heel: 'Kräng',
     unitNote: 'Medel med p10–p90-intervall; TWA/AWA visar dominerande sida (SB/BB); TWD är cirkulärt medel med ±vinkelavvikelse.',
     noWeather: 'Ingen väderstatistik (tripen saknar sluttid eller data).',
+    trendNote: 'Halvtimmen före markören, senaste överst.',
+    hourGraph: 'Visa timmen minut för minut',
+    hourGraphNote: 'Timmen minut för minut, senaste längst ner. Varje kolumn är skalad efter sitt eget spann under timmen.',
+    noHourData: 'Ingen data loggad för den här timmen.',
+    minutes: 'min',
     tack: 'Slag', gybe: 'Gipp',
     gybeSing: 'gipp', gybePlur: 'gippar', tackSing: 'slag', tackPlur: 'slag',
     andWord: 'och', noManeuvers: 'Inga gippar eller slag',
@@ -155,8 +165,12 @@ let scrubEvents = null
 let scrubFields = []
 let scrubHasMotor = false
 // The trip whose detail is currently open, so a late async response (hourly
-// stats) for a trip we've navigated away from can be dropped.
+// stats) for a trip we've navigated away from can be dropped. The row itself is
+// kept too, since the hour graphs need the trip's own start and stop to clamp
+// the window they ask for.
 let currentDetailId = null
+let currentDetailTrip = null
+let currentHourly = []
 
 function toKnots (ms) {
   return ms == null ? null : ms / MS_PER_KNOT
@@ -416,6 +430,7 @@ function cell (mean, range) {
 
 function renderDetail (data) {
   const tr = data.trip
+  currentDetailTrip = tr
   const el = $('#detail')
   const events = (data.events || []).map((e, i) => `
     <li class="ev-item" data-idx="${i}">
@@ -447,6 +462,8 @@ function renderDetail (data) {
       <input type="range" id="scrub" class="scrub" min="0" max="0" step="1" value="0"
              aria-label="${t('timeline')}">
       <div class="scrub-times"><span id="scrub-start"></span><span id="scrub-end"></span></div>
+      <div id="scrub-graph" class="scrub-graph" hidden></div>
+      <p id="scrub-graph-note" class="unit-note" hidden>${t('trendNote')}</p>
     </div>
 
     <div class="places">
@@ -552,15 +569,109 @@ function hourlyRowsHtml (hourly) {
       ? `<td class="motor-cell" colspan="2"><span class="tag">${t('motorHour')}</span></td>`
       : `${cell(n(toDeg(twa.mean)) + sideLetter(twa.side), `${n(toDeg(twa.p10))}–${n(toDeg(twa.p90))}`)}
          ${cell(n(toDeg(awa.mean)) + sideLetter(awa.side), `${n(toDeg(awa.p10))}–${n(toDeg(awa.p90))}`)}`
-    return `<tr>
-      <td>${fmtTime(h.time)}</td>
+    // Each row carries a collapsed graph row below it, filled on first opening.
+    return `<tr class="hour-row" data-time="${h.time}" tabindex="0" role="button"
+        aria-expanded="false" title="${escapeAttr(t('hourGraph'))}">
+      <td><span class="hr-caret" aria-hidden="true"></span>${fmtTime(h.time)}</td>
       ${cell(n(toKnots(stw.mean), 1), `${n(toKnots(stw.p10), 1)}–${n(toKnots(stw.p90), 1)}`)}
       ${cell(n(tws.mean, 1), `${n(tws.p10, 1)}–${n(tws.p90, 1)}`)}
       ${cell(twd.mean != null ? n(toDeg(twd.mean)) : '–', twd.std != null ? '±' + n(toDeg(twd.std)) : '')}
       ${twaAwa}
       ${cell(n(toDeg(heel.mean)), `${n(toDeg(heel.p10))}–${n(toDeg(heel.p90))}`)}
-    </tr>`
+    </tr>
+    <tr class="hour-graph" hidden><td colspan="7"></td></tr>`
   }).join('')
+}
+
+// The channels both graphs draw (the hour under a weather row, the rolling half
+// hour under the slider), in the same order as the weather table's columns. The
+// history arrives in SI units (radians, m/s), so each channel says how to reach
+// its display unit; TWD is circular, which the graph has to know to draw a wind
+// veering through north as one line rather than a cliff.
+const GRAPH_CHANNELS = [
+  { key: 'stw', label: 'STW', unit: ' kn', decimals: 1, map: toKnots },
+  { key: 'tws', label: 'TWS', unit: ' m/s', decimals: 1 },
+  { key: 'twd', label: 'TWD', unit: '°', decimals: 0, map: toDeg, wrap: 360 }
+]
+const HOUR_MS = 3600000
+// One sample per pixel at the graph's 4 px per minute. Finer than that draws
+// several samples on the same row of pixels, which only thickens the line.
+const HOUR_STEP_SEC = 15
+// Three of those samples, averaged: enough to settle sensor hair, too short to
+// round off a real shift or a lull.
+const HOUR_SMOOTH_SEC = 45
+
+// Open or close an hour's graph row, loading it the first time it is opened.
+function toggleHourGraph (row) {
+  const panel = row.nextElementSibling
+  if (!panel || !panel.classList.contains('hour-graph')) {
+    return
+  }
+  const open = row.getAttribute('aria-expanded') === 'true'
+  row.setAttribute('aria-expanded', open ? 'false' : 'true')
+  panel.hidden = open
+  if (!open) {
+    loadHourGraph(panel, parseInt(row.getAttribute('data-time'), 10))
+  }
+}
+
+// Fetch the hour's history and draw it. The graph always spans the full hour so
+// every row's minute scale is the same, but only the part inside the trip is
+// asked for — a trip that started at 10:35 has nothing to show above it.
+async function loadHourGraph (panel, hourStart) {
+  const cellEl = panel.firstElementChild
+  const trip = currentDetailTrip
+  // `loading` as well as `loaded`: closing and reopening a row faster than the
+  // request would otherwise run two of them against the same panel, and a second
+  // one that failed would leave its error over the first one's finished graph,
+  // with the row marked loaded and no way back short of reopening the trip.
+  if (panel.dataset.loaded || panel.dataset.loading || !trip) {
+    return
+  }
+  panel.dataset.loading = '1'
+  const from = Math.max(hourStart, trip.start_time)
+  const to = Math.min(hourStart + HOUR_MS, trip.stop_time || Date.now())
+  cellEl.innerHTML = `<p class="hint">${t('loading')}</p>`
+  let points = []
+  try {
+    const fields = GRAPH_CHANNELS.map((c) => c.key).join(',')
+    const url = `${READ}/trips/${trip.id}/series?from=${from}&to=${to}` +
+      `&fields=${fields}&step=${HOUR_STEP_SEC}`
+    points = (await getJSON(url)).points || []
+  } catch (e) {
+    // Not marked loaded: reopening the row is the retry.
+    delete panel.dataset.loading
+    cellEl.innerHTML = `<p class="hint">${escapeHtml(t('error') + e.message)}</p>`
+    return
+  }
+  delete panel.dataset.loading
+  // A trip switched under a slow request would draw the wrong boat's hour.
+  if (trip !== currentDetailTrip) {
+    return
+  }
+  if (!points.length) {
+    cellEl.innerHTML = `<p class="hint">${t('noHourData')}</p>`
+    panel.dataset.loaded = '1'
+    return
+  }
+  // Label each panel with the hour's own statistic from the table row above it
+  // (TWD's circular mean over every raw sample, not a second mean of the drawn
+  // line), so the graph and the row never show different numbers.
+  const stats = currentHourly.find((h) => h.time === hourStart) || {}
+  const channels = GRAPH_CHANNELS.map((c) => Object.assign({}, c, {
+    summary: stats[c.key] ? stats[c.key].mean : undefined
+  }))
+  cellEl.innerHTML = `<div class="hour-graph-box"></div><p class="unit-note">${t('hourGraphNote')}</p>`
+  VGraph.render(cellEl.firstElementChild, {
+    from: hourStart,
+    to: hourStart + HOUR_MS,
+    samples: points,
+    channels,
+    locale: LOCALE,
+    axisLabel: t('minutes'),
+    smoothSeconds: HOUR_SMOOTH_SEC
+  })
+  panel.dataset.loaded = '1'
 }
 
 // Fill the weather section once the hourly stats arrive: the full table, or the
@@ -570,6 +681,9 @@ function fillHourly (hourly) {
   if (!host) {
     return
   }
+  // Kept so an hour's graph can label itself with this row's own figures rather
+  // than a second, slightly different mean of its own making.
+  currentHourly = hourly || []
   const rows = hourlyRowsHtml(hourly)
   host.innerHTML = rows
     ? `<div class="table-scroll"><table class="hourly">
@@ -586,6 +700,17 @@ function fillHourly (hourly) {
       </table></div>
       <p class="unit-note">${t('unitNote')}</p>`
     : `<p class="hint">${t('noWeather')}</p>`
+  // A row opens its own graph; it is a row, not a <details>, because a table
+  // cannot nest one around a <tr>.
+  host.querySelectorAll('.hour-row').forEach((row) => {
+    row.addEventListener('click', () => toggleHourGraph(row))
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        toggleHourGraph(row)
+      }
+    })
+  })
 }
 
 // ---- track map -----------------------------------------------------------
@@ -703,6 +828,7 @@ function scrubTo (idx, move) {
   if (info) {
     info.innerHTML = infoPanelHtml(p, ev ? maneuverLabel(ev) : null)
   }
+  queueTrend(idx)
   if (move === 'reveal') {
     trackMap.getContainer().scrollIntoView({ behavior: 'smooth', block: 'center' })
     trackMap.panTo([p.lat, p.lon])
@@ -711,6 +837,55 @@ function scrubTo (idx, move) {
     // pan would still be gliding towards the previous one when the next arrives.
     trackMap.setView([p.lat, p.lon], trackMap.getZoom(), { animate: false })
   }
+}
+
+// The rolling half hour under the slider: the marker's own moment at the top and
+// the history running down from it, the way a plotter draws what is behind you.
+// It is drawn from the track already in memory, so scrubbing costs no request;
+// its resolution is the track's, which on a long passage is coarser than the
+// per-hour graph's.
+const TREND_MS = 30 * 60000
+let trendPending = null
+
+// Redraw at most once per frame: a drag emits far more events than that, and
+// each one rebuilds three panels.
+function queueTrend (idx) {
+  const host = $('#scrub-graph')
+  if (!host || host.hidden) {
+    return
+  }
+  const idle = trendPending == null
+  trendPending = idx
+  if (idle) {
+    requestAnimationFrame(() => {
+      const at = trendPending
+      trendPending = null
+      drawTrend(host, at)
+    })
+  }
+}
+
+function drawTrend (host, idx) {
+  if (!host.isConnected || !trackPoints.length) {
+    return
+  }
+  const p = trackPoints[Math.max(0, Math.min(trackPoints.length - 1, idx))]
+  const from = p.t - TREND_MS
+  // Each panel is labelled with this moment's own value, the same figure the
+  // info panel above shows, rather than a mean over the window behind it.
+  const channels = GRAPH_CHANNELS.map((c) => Object.assign({}, c, {
+    summary: p[c.key] != null ? p[c.key] : undefined
+  }))
+  VGraph.render(host, {
+    from,
+    to: p.t,
+    samples: trackPoints.filter((q) => q.t >= from && q.t <= p.t),
+    channels,
+    newestAtTop: true,
+    locale: LOCALE,
+    axisLabel: t('minutes'),
+    smoothSeconds: HOUR_SMOOTH_SEC
+  })
 }
 
 // Scrub to a maneuver by its time.
@@ -911,7 +1086,9 @@ function buildScrubber (points, events) {
   const slider = $('#scrub')
   const info = $('#track-info')
   const scrub = $('#track-scrub')
-  if (!slider || !info || !scrub) {
+  const trend = $('#scrub-graph')
+  const trendNote = $('#scrub-graph-note')
+  if (!slider || !info || !scrub || !trend || !trendNote) {
     return
   }
   const last = points.length - 1
@@ -947,6 +1124,11 @@ function buildScrubber (points, events) {
   slider.oninput = () => scrubTo(parseInt(slider.value, 10), 'follow')
   info.hidden = false
   scrub.hidden = false
+  // The rolling graph needs something to draw: a trip with none of its channels
+  // logged (a bare position track) leaves it out rather than showing empty boxes.
+  const hasTrend = points.some((p) => GRAPH_CHANNELS.some((c) => p[c.key] != null))
+  trend.hidden = !hasTrend
+  trendNote.hidden = !hasTrend
   scrubTo(0)
 }
 
@@ -1842,6 +2024,7 @@ function teardownTrack () {
   scrubEvents = null
   scrubFields = []
   scrubHasMotor = false
+  trendPending = null
 }
 
 function escapeHtml (s) {

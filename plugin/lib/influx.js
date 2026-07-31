@@ -24,6 +24,11 @@ const DEFAULT_PATHS = {
   position: 'navigation.position'
 }
 
+// Channels whose samples are angles: they must be sampled, never averaged, for
+// the same reason twaSeries takes first() — the arithmetic mean of +179° and
+// -179° is 0°, and of 359° and 1° is 180°.
+const ANGLE_KEYS = new Set(['twa', 'awa', 'twd'])
+
 function quoteMeasurement (m) {
   return m.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
@@ -328,6 +333,44 @@ function makeInflux (config) {
           `GROUP BY time(${stepSec || 5}s) fill(none)`
       )
       return res.values.map((v) => [v[0], v[1]]).filter((p) => p[1] != null)
+    },
+
+    // Several named scalar channels on one shared time grid, as
+    // [{ t, <key>: value }, ...] with a null wherever a channel had no sample in
+    // that bucket. The generic series behind the detail graphs: the caller says
+    // which channels and how fine a grid, and gets the history back as it was,
+    // undigested — no means over an hour, no percentiles.
+    async channelSeries (startMs, stopMs, stepSec, keys) {
+      const step = Math.max(1, Math.trunc(Number(stepSec)) || 5)
+      const w = window(startMs, stopMs)
+      // Only scalar "value" measurements: position has no such column, and the
+      // engine state is a string a mean() would drop.
+      const fields = (keys || []).filter(
+        (k) => paths[k] && k !== 'position' && k !== 'engineState')
+      if (!fields.length) {
+        return []
+      }
+      const results = await run(fields.map((k) =>
+        `SELECT ${ANGLE_KEYS.has(k) ? 'first' : 'mean'}("value") AS v ` +
+        `FROM "${quoteMeasurement(paths[k])}" WHERE ${w} ` +
+        `GROUP BY time(${step}s) fill(none)`))
+      const rows = new Map()
+      results.forEach((result, i) => {
+        for (const [time, v] of result.values) {
+          if (v == null) {
+            continue
+          }
+          if (!rows.has(time)) {
+            const row = { t: time }
+            fields.forEach((k) => {
+              row[k] = null
+            })
+            rows.set(time, row)
+          }
+          rows.get(time)[fields[i]] = v
+        }
+      })
+      return Array.from(rows.values()).sort((a, b) => a.t - b.t)
     },
 
     // Downsampled track for the map plot: position joined with a set of scalar

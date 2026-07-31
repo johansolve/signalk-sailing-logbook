@@ -41,9 +41,11 @@ browser** — any browser with the **WebCodecs API**, even Safari on an iPhone �
   under the map scrubs through the trip, moving a highlight dot along the track
   and updating a fixed info panel with that moment's conditions (SOG/STW,
   TWS/TWD, TWA/AWA, heel, plus an engine badge for the stretches under power);
-  clicking the track or a maneuver jumps the scrubber there. Zoom in on a stretch
-  and the map follows the slider, keeping the boat centred; at the zoom the whole
-  track is framed at, it stays put. Drag the handle below the map to enlarge it
+  clicking the track or a maneuver jumps the scrubber there. Under the slider a
+  rolling half-hour graph shows STW, TWS and TWD the way a plotter draws them
+  under way: the marker's moment at the top, the half hour behind it running
+  down. Zoom in on a stretch and the map follows the slider, keeping the boat
+  centred; at the zoom the whole track is framed at, it stays put. Drag the handle below the map to enlarge it
   for a closer look. The map tiles need the network; offline, the speed-coloured
   track still shows on a blank canvas.
 - **Automatic trip detection** from `navigation.speedOverGround` with configurable
@@ -67,6 +69,11 @@ browser** — any browser with the **WebCodecs API**, even Safari on an iPhone �
   deviation), TWA, AWA and heel (degrees), each as mean with a p10–p90 range
   (the "significant" min/max, with raw extremes filtered out). TWA/AWA also show
   the dominant tack side.
+- **Each hour opens into a graph of itself**, in the manner of a chartplotter's
+  wind history: time runs down the box, with a narrow panel each for STW, TWS and
+  TWD drawn from the logged history rather than the hour's means, lightly
+  smoothed. Every panel is scaled to its own range for that hour, and the box
+  always spans the full hour, so the minute scale reads the same on every row.
 - **Motoring vs sailing**: reads `propulsion.<n>.state` to drop maneuvers made
   under engine and to flag motoring trips (their report omits tacks/gybes and the
   point-of-sail wording). The engine state comes from a separate provider — this
@@ -161,6 +168,10 @@ Read (honour readonly access), under `/signalk/v1/api/sailing-logbook`:
 - `GET /trips` — list trips with tack/gybe counts
 - `GET /trips/:id` — trip detail (trip row and maneuvers)
 - `GET /trips/:id/hourly` — hourly wind and heel statistics (cached per completed trip)
+- `GET /trips/:id/series?from=&to=&fields=&step=` — named channels (`sog`, `stw`,
+  `tws`, `twd`, `twa`, `awa`, `heel`) over a window inside the trip, on one
+  shared time grid; the history behind the per-hour graphs. The window is
+  clamped to the trip and the grid to a point budget.
 - `GET /trips/:id/track` — downsampled position+SOG track for the map
 - `GET /trips/:id/report?lang=en|sv` — plain-text logbook entry
 

@@ -23,6 +23,11 @@ module.exports = [
     languageOptions: { sourceType: 'script', globals: { ...globals.browser, L: 'readonly' } }
   },
   {
+    // vgraph.js is a classic script too; app.js draws its hour graphs with it.
+    files: ['public/app.js'],
+    languageOptions: { globals: { VGraph: 'readonly' } }
+  },
+  {
     // export.js is a second classic script sharing app.js's global scope, so the
     // helpers it borrows from there have to be declared here.
     files: ['public/export.js'],

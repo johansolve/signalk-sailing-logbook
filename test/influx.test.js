@@ -67,6 +67,59 @@ describe('trackSeries', function () {
   })
 })
 
+describe('channelSeries', function () {
+  const influx = makeInflux({ host: 'x', port: 8086, database: 'db' })
+
+  // Like stubFetch, but keeps the query string so a test can assert on the SQL.
+  function stubFetchQuery (results) {
+    const orig = global.fetch
+    const seen = { q: null }
+    global.fetch = async (url) => {
+      seen.q = new URL(String(url)).searchParams.get('q')
+      return { ok: true, json: async () => ({ results }) }
+    }
+    return { seen, restore: () => { global.fetch = orig } }
+  }
+
+  it('joins the named channels on the shared grid, null where a bucket is empty', async function () {
+    const { restore } = stubFetchQuery([
+      { series: [{ columns: ['time', 'v'], values: [[1000, 3.1], [2000, 3.4]] }] },
+      { series: [{ columns: ['time', 'v'], values: [[2000, 5.0], [3000, null]] }] }
+    ])
+    try {
+      assert.deepEqual(await influx.channelSeries(0, 4000, 5, ['twd', 'tws']), [
+        { t: 1000, twd: 3.1, tws: null },
+        { t: 2000, twd: 3.4, tws: 5.0 }
+      ])
+    } finally {
+      restore()
+    }
+  })
+
+  it('samples angles and averages the rest', async function () {
+    const { seen, restore } = stubFetchQuery([{ series: [] }, { series: [] }])
+    try {
+      await influx.channelSeries(0, 4000, 10, ['twd', 'stw'])
+      assert.match(seen.q, /first\("value"\) AS v FROM "environment\.wind\.directionTrue"/)
+      assert.match(seen.q, /mean\("value"\) AS v FROM "navigation\.speedThroughWater"/)
+      assert.match(seen.q, /GROUP BY time\(10s\)/)
+    } finally {
+      restore()
+    }
+  })
+
+  it('ignores channels it cannot serve, and queries nothing when none are left', async function () {
+    const { seen, restore } = stubFetchQuery([{ series: [] }])
+    try {
+      // position has no "value" column and engine state is a string.
+      assert.deepEqual(await influx.channelSeries(0, 4000, 5, ['position', 'engineState', 'nope']), [])
+      assert.equal(seen.q, null)
+    } finally {
+      restore()
+    }
+  })
+})
+
 describe('awaSeries (maneuver fallback)', function () {
   const influx = makeInflux({ host: 'x', port: 8086, database: 'db' })
 
