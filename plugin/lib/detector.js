@@ -15,6 +15,33 @@ const KNOT = 0.514444
 
 // ---- Trip detection --------------------------------------------------------
 
+// Speed over ground alone is a poor test of whether the boat is going anywhere.
+// Lying to a mooring, GPS noise puts the 30 s mean at 0.2–0.5 kn on a boat that
+// stays inside 10 metres for an hour: enough to reset the stop timer every few
+// minutes and keep a finished trip open indefinitely (observed 2026-08-02), and
+// enough to touch the start threshold in a gust. The position trail settles both
+// questions where speed cannot — the whole range over the stop window was 12 m
+// at the buoy against 98 m for the slowest window of the approach that day.
+//
+// Stopping: every fix across the stop window lies within stopSpreadMeters of the
+// others. That condition already spans the full window, so it ends the trip at
+// once, backdated to the window's start.
+//
+// Starting: the boat must also have gone somewhere — at least half the distance
+// the start threshold speed would cover in startMinMs. Swinging round a buoy
+// never adds up to that however the reported speed behaves.
+//
+// Both tests abstain unless the trail actually covers the window in question: no
+// fixes, or a hole in them, must never end a trip nor hold one back.
+const FIX_GAP_MS = 120000 // a hole this long means the trail doesn't cover it
+const MIN_FIXES = 5
+const M_PER_DEG = 111320
+
+function metres (lat1, lon1, lat2, lon2) {
+  const mPerLon = M_PER_DEG * Math.cos(((lat1 + lat2) / 2 * Math.PI) / 180)
+  return Math.hypot((lat1 - lat2) * M_PER_DEG, (lon1 - lon2) * mPerLon)
+}
+
 // State machine with hysteresis. Movement must persist for startMinMs before a
 // trip starts; stillness must persist for stopMinMs before it stops. The trip's
 // start/stop timestamps are the moment the qualifying condition *began*, not the
@@ -24,11 +51,115 @@ function createTripDetector (opts) {
   const stopSpeed = (opts.stopKnots != null ? opts.stopKnots : 0.3) * KNOT
   const startMinMs = (opts.startMinSeconds != null ? opts.startMinSeconds : 180) * 1000
   const stopMinMs = (opts.stopMinSeconds != null ? opts.stopMinSeconds : 600) * 1000
+  const stopSpread = opts.stopSpreadMeters != null ? opts.stopSpreadMeters : 50
+  const minDisplacement = (startSpeed * startMinMs) / 1000 / 2
+  // Position only overrules speed while the speed is low enough to be consistent
+  // with lying still. A frozen GPS reporting the same coordinate at 5 kn, or a
+  // boat working back and forth in front of a bridge, must not read as moored.
+  const confinedMaxSpeed = Math.max(KNOT, stopSpeed)
 
   let moving = opts.initialMoving === true // resume an open trip across restarts
+  let movingSince = null // when the current trip began; null when resumed
   let candidateSince = null // time when the opposite condition first held
+  const trail = [] // [timeMs, lat, lon], covering the longer hysteresis window
+
+  // The fixes covering [from, to], or null when the trail can't speak for that
+  // span: too few of them, starting or ending too far inside it, or holed.
+  function windowFixes (from, to) {
+    const win = trail.filter((p) => p[0] >= from && p[0] <= to)
+    if (win.length < MIN_FIXES) {
+      return null
+    }
+    if (win[0][0] - from > FIX_GAP_MS || to - win[win.length - 1][0] > FIX_GAP_MS) {
+      return null
+    }
+    for (let i = 1; i < win.length; i++) {
+      if (win[i][0] - win[i - 1][0] > FIX_GAP_MS) {
+        return null
+      }
+    }
+    return win
+  }
+
+  // Has the boat stayed put across the whole stop window? Measured as the
+  // diagonal of the bounding box, which is never smaller than the true largest
+  // distance between two fixes, so it errs towards leaving the trip open.
+  // Returns the fixes it judged, so the stop can be dated to the first of them
+  // rather than to a window edge the trail may not quite reach back to.
+  function confined (timeMs, sog) {
+    if (!(stopSpread > 0) || sog > confinedMaxSpeed) {
+      return null
+    }
+    // The window has to lie wholly inside the trip, or the stop it produces
+    // would predate the start it is meant to end.
+    if (movingSince != null && timeMs - stopMinMs < movingSince) {
+      return null
+    }
+    const win = windowFixes(timeMs - stopMinMs, timeMs)
+    if (!win) {
+      return null
+    }
+    let minLat = Infinity
+    let maxLat = -Infinity
+    let minLon = Infinity
+    let maxLon = -Infinity
+    for (const [, lat, lon] of win) {
+      minLat = Math.min(minLat, lat)
+      maxLat = Math.max(maxLat, lat)
+      minLon = Math.min(minLon, lon)
+      maxLon = Math.max(maxLon, lon)
+    }
+    return metres(minLat, minLon, maxLat, maxLon) <= stopSpread ? win : null
+  }
+
+  // Net displacement over the last startMinMs. Unknown (no usable trail) counts
+  // as departed: the speed rule is then the only evidence there is. The window
+  // is the recent one rather than the whole candidate stretch, which grows
+  // without bound while the speed stays up — once it outgrew the trail the
+  // trail could no longer answer, and the rule fell open on exactly the boat it
+  // was holding back.
+  function departed (from, to) {
+    if (!(stopSpread > 0)) {
+      return true
+    }
+    const win = windowFixes(Math.max(from, to - startMinMs), to)
+    if (!win) {
+      return true
+    }
+    const a = win[0]
+    const b = win[win.length - 1]
+    return metres(a[1], a[2], b[1], b[2]) >= minDisplacement
+  }
 
   return {
+    // Position fixes feed the trail that both rules read. Optional: without them
+    // the detector behaves exactly as it did on speed alone.
+    feedPosition (timeMs, lat, lon) {
+      if (typeof timeMs !== 'number' || Number.isNaN(timeMs)) {
+        return
+      }
+      if (typeof lat !== 'number' || Number.isNaN(lat)) {
+        return
+      }
+      if (typeof lon !== 'number' || Number.isNaN(lon)) {
+        return
+      }
+      // A time that jumps backwards (a restart, a replayed scan) invalidates the
+      // trail rather than leaving it interleaved with the new one.
+      if (trail.length && timeMs < trail[trail.length - 1][0]) {
+        trail.length = 0
+      }
+      trail.push([timeMs, lat, lon])
+      // Keep a fix gap's slack beyond the window itself: live, the trail is fed
+      // at wall-clock time while the speed samples carry the start time of a
+      // bucket flushed up to a minute later, so the window a rule asks about
+      // reaches further back than the fix that just arrived.
+      const keepMs = Math.max(startMinMs, stopMinMs) + FIX_GAP_MS
+      while (trail.length && trail[0][0] < timeMs - keepMs) {
+        trail.shift()
+      }
+    },
+
     // onStart(timeMs) / onStop(timeMs) are optional callbacks.
     feed (timeMs, sog, onStart, onStop) {
       if (typeof timeMs !== 'number' || Number.isNaN(timeMs)) {
@@ -41,9 +172,10 @@ function createTripDetector (opts) {
         if (sog >= startSpeed) {
           if (candidateSince == null) {
             candidateSince = timeMs
-          } else if (timeMs - candidateSince >= startMinMs) {
+          } else if (timeMs - candidateSince >= startMinMs && departed(candidateSince, timeMs)) {
             moving = true
             const startedAt = candidateSince
+            movingSince = startedAt
             candidateSince = null
             if (onStart) {
               onStart(startedAt)
@@ -53,11 +185,24 @@ function createTripDetector (opts) {
           candidateSince = null
         }
       } else {
+        // The boat has not left a 50 m circle in ten minutes: whatever the log
+        // says about speed, the trip is over.
+        const still = confined(timeMs, sog)
+        if (still) {
+          moving = false
+          movingSince = null
+          candidateSince = null
+          if (onStop) {
+            onStop(Math.max(timeMs - stopMinMs, still[0][0]))
+          }
+          return
+        }
         if (sog <= stopSpeed) {
           if (candidateSince == null) {
             candidateSince = timeMs
           } else if (timeMs - candidateSince >= stopMinMs) {
             moving = false
+            movingSince = null
             const stoppedAt = candidateSince
             candidateSince = null
             if (onStop) {
@@ -78,6 +223,7 @@ function createTripDetector (opts) {
     flush (timeMs, onStop) {
       if (moving) {
         moving = false
+        movingSince = null
         candidateSince = null
         if (onStop) {
           onStop(timeMs)
@@ -247,4 +393,42 @@ function createManeuverDetector (opts) {
   }
 }
 
-module.exports = { createTripDetector, createManeuverDetector, KNOT }
+// The speed the maneuver gate should judge a tack by. Normally the log, which
+// measures what actually flows past the hull. But a paddlewheel fouls, and a
+// blocked impeller does not fail loudly — it reads a flat zero, and the gate
+// then drops every maneuver of the day as harbour manoeuvring by a drifting
+// boat (a whole passage of them on 2026-08-01, weed on the wheel).
+//
+// A log reading exactly nothing is a log that is not reading: a sailing boat
+// always has some water going past the hull. So zero, like a missing value,
+// hands the gate over to speed over ground, which nothing growing on the hull
+// can block. Any positive reading is taken at face value however low it looks
+// beside SOG — a current can legitimately hold the log well under the ground
+// track, and second-guessing that would throw away a real measurement.
+//
+// The zero has to last, though: a dropped sample or a wheel that stalls for a
+// moment in a lull is not a fouled log, and switching sources on one reading
+// would make the gate flicker between two speeds mid-maneuver. Only once the
+// zero has held for zeroSeconds does the ground track take over, and the first
+// positive reading hands it straight back.
+const ZERO_RUN_SECONDS = 30
+function createSpeedGate (opts) {
+  const zeroMs = ((opts && opts.zeroSeconds != null ? opts.zeroSeconds : ZERO_RUN_SECONDS)) * 1000
+  let zeroSince = null
+  return {
+    speedAt (timeMs, stw, sog) {
+      if (stw != null && stw > 0) {
+        zeroSince = null
+        return stw
+      }
+      // A time that jumps backwards (a restart, a replayed scan) starts a fresh
+      // run rather than one of negative length.
+      if (zeroSince == null || timeMs < zeroSince) {
+        zeroSince = timeMs
+      }
+      return sog != null && timeMs - zeroSince >= zeroMs ? sog : stw
+    }
+  }
+}
+
+module.exports = { createTripDetector, createManeuverDetector, createSpeedGate, KNOT }

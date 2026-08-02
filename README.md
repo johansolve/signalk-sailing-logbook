@@ -50,7 +50,12 @@ browser** â€” any browser with the **WebCodecs API**, even Safari on an iPhone â
   track still shows on a blank canvas.
 - **Automatic trip detection** from `navigation.speedOverGround` with configurable
   speed thresholds and minimum durations (hysteresis, so brief speed spikes don't
-  start a trip and a plugin restart doesn't end one).
+  start a trip and a plugin restart doesn't end one), backed up by the position
+  trail: a boat that hasn't left a 50 m circle in the whole stop window has
+  finished her trip whatever the speed says, and a boat that hasn't actually gone
+  anywhere hasn't started one. Both matter at a mooring, where GPS noise alone
+  keeps the reported speed astride the thresholds. Either rule abstains unless the
+  fixes cover the window, so lost position data changes nothing.
 - **Tack / gybe detection** from `environment.wind.angleTrueWater` (falling back
   to `environment.wind.angleApparent` for a retrospective scan when the
   true-wind derivation logged nothing for that stretch), robust to real-world
@@ -138,6 +143,7 @@ to point it elsewhere (ideally an SSD, if your data directory sits on an SD card
 | `dbPath` | (plugin data dir) | SQLite file location; blank uses the plugin's data directory |
 | `startKnots` / `stopKnots` | 0.5 / 0.3 | SOG thresholds to start / stop a trip |
 | `startMinSeconds` / `stopMinSeconds` | 180 / 600 | how long the condition must hold |
+| `stopSpreadMeters` | 50 | also end a trip when every fix over the stop window stays within this many metres; 0 turns the position rules off |
 | `minNewTackSeconds` | 90 | min time on the new tack for a maneuver to count |
 | `runDeadbandDeg` | 10 | degrees past dead-downwind before a side counts |
 | `minSailingSpeedKnots` | 2 | min boat speed (STW) for a maneuver to count |

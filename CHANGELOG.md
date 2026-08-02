@@ -27,6 +27,37 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   trip, on one shared time grid. Angles are sampled, never averaged. Read-only,
   like the rest of the read API.
 
+### Fixed
+- **A trip at a mooring would not end.** Speed over ground is a poor test of
+  stillness: lying to a buoy, GPS noise alone put the 30 s mean at 0.2–0.5 kn on a
+  boat that stayed inside 10 metres for an hour, which reset the stop timer every
+  few minutes and kept the trip open indefinitely. The longest unbroken stretch
+  under the stop threshold was 6 minutes against the 10 required. The position
+  trail now gets a vote: when every fix across the stop window lies within
+  `stopSpreadMeters` (default 50) of the others, the trip ends, backdated to the
+  start of that window. On the trip that prompted this the rule ended it at
+  13:20:30, when the boat was 24 m from the buoy she moored to seconds later.
+  Speed still ends a trip on its own, so lost or holed position data can never
+  keep one open — nor close one, since the rule abstains unless the fixes actually
+  cover the window, unless the window lies wholly inside the trip (a stop can
+  never predate the start it ends), and unless the speed agrees: a frozen GPS
+  repeating one coordinate at 5 kn, or a boat working back and forth in front of
+  a bridge, is confined but plainly still under way.
+- **A gust at the mooring could start a trip.** The same noise reaches the start
+  threshold, and three minutes of it was all the old rule asked for. A start now
+  also requires the boat to have gone somewhere: at least half the distance the
+  start threshold speed would cover over the last `startMinSeconds`. Swinging
+  round a buoy never adds up to that, however long the noise holds. With no
+  usable fixes the speed rule decides alone, as before.
+- **A fouled log silently dropped every manoeuvre of the day.** The minimum-speed
+  gate reads speed through water, and a paddle wheel blocked by weed does not fail
+  loudly — it reads a flat zero, which the gate takes for a drifting boat and
+  suppresses every tack and gybe (a whole passage of them on 2026-08-01). A log
+  reading exactly nothing is now taken as a log that is not reading: after 30 s of
+  it the gate falls back to speed over ground, and hands back on the first
+  positive reading. Any positive reading is trusted however low it looks beside
+  SOG, since a current can legitimately hold the log well under the ground track.
+
 ## [0.9.3] - 2026-07-30
 
 ### Added

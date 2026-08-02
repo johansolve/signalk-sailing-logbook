@@ -17,7 +17,7 @@ const dbLib = require('./lib/db')
 const influxLib = require('./lib/influx')
 const geocode = require('./lib/geocode')
 const report = require('./lib/report')
-const { createTripDetector, createManeuverDetector, KNOT } = require('./lib/detector')
+const { createTripDetector, createManeuverDetector, createSpeedGate, KNOT } = require('./lib/detector')
 const { fromStateSeries } = require('./lib/engine')
 
 const NM = 1852 // metres per nautical mile
@@ -49,6 +49,9 @@ module.exports = function (app) {
   // a start. The trail lets a trip be anchored where it actually began or ended.
   let positionTrail = []
   let lastSTW = null // most recent speed through water (m/s), for the maneuver gate
+  let lastSOG = null // most recent speed over ground, the gate's fallback
+  let speedGate = null // decides between the two (see createSpeedGate)
+  let fouledLogSeen = false // so the fallback is reported once, not per sample
   let liveEngineState = null // last propulsion.<n>.state value we've seen
   let liveEngineOnSince = null // ms when it last changed to 'started', for the gate
   let geocodeEnabled = true
@@ -91,6 +94,12 @@ module.exports = function (app) {
         type: 'number',
         title: 'Stillness must persist this long to end a trip (s)',
         default: 600
+      },
+      stopSpreadMeters: {
+        type: 'number',
+        title: 'Also end a trip when every position fix over that window stays within this many metres (0 = off)',
+        description: 'Lying to a mooring or anchor, GPS noise alone keeps the reported speed above the stop threshold and a finished trip open. The same trail also holds a trip back from starting until the boat has actually left, which a swing round the buoy never does.',
+        default: 50
       },
       minNewTackSeconds: {
         type: 'number',
@@ -669,10 +678,18 @@ module.exports = function (app) {
 
   async function scan (fromMs, toMs, stepSec) {
     const samples = await influx.sogSeries(fromMs, toMs, stepSec || 30)
+    // The detector reads the position trail as well as the speed, so replay the
+    // fixes into it interleaved with the speed samples, in time order.
+    const fixes = await influx.positionSeries(fromMs, toMs, 15)
     const detector = createTripDetector(detectorOpts())
     const found = []
     let open = null
+    let next = 0
     samples.forEach(([t, sog]) => {
+      while (next < fixes.length && fixes[next][0] <= t) {
+        detector.feedPosition(fixes[next][0], fixes[next][1], fixes[next][2])
+        next += 1
+      }
       detector.feed(
         t,
         sog,
@@ -749,8 +766,12 @@ module.exports = function (app) {
         angleSource = 'awa'
       }
       const stw = await influx.stwSeries(startMs, stopMs, 1)
+      // The gate's fallback needs speed over ground on the same grid, for a
+      // window where the log was fouled or silent (see gateSpeed).
+      const sog = await influx.sogSeries(startMs, stopMs, 1)
       const positions = await influx.positionSeries(startMs, stopMs, 15)
       const stwAt = new Map(stw)
+      const sogAt = new Map(sog)
       const retroTrip = {
         start_time: startMs,
         stop_time: stopMs,
@@ -772,8 +793,15 @@ module.exports = function (app) {
         return best || {}
       }
       const md = createManeuverDetector(detectorOpts())
+      // Its own gate, replaying this window's zero runs from the start rather
+      // than inheriting whatever state the live one is in.
+      const sg = createSpeedGate()
       angles.forEach(([t, angle]) => {
-        md.feed(t, angle, stwAt.has(t) ? stwAt.get(t) : null, (m) => {
+        const speed = sg.speedAt(
+          t,
+          stwAt.has(t) ? stwAt.get(t) : null,
+          sogAt.has(t) ? sogAt.get(t) : null)
+        md.feed(t, angle, speed, (m) => {
           const pos = nearestPos(m.time)
           if (isEdgeManeuver(retroTrip, m.time, pos.lat, pos.lon) || engine.onAt(m.time)) {
             return
@@ -801,12 +829,27 @@ module.exports = function (app) {
     return tripId
   }
 
+  // The live gate, with a one-off note in the log so a passage gated on speed
+  // over ground says so rather than looking like an ordinary quiet day.
+  function gatedSpeed (timeMs, stw, sog) {
+    const speed = speedGate ? speedGate.speedAt(timeMs, stw, sog) : stw
+    if (speed !== stw && !fouledLogSeen) {
+      fouledLogSeen = true
+      app.debug(
+        `speed through water unusable for the maneuver gate (STW ` +
+        `${stw == null ? 'missing' : stw.toFixed(2)} m/s vs SOG ${sog.toFixed(2)} m/s); ` +
+        'gating on speed over ground instead')
+    }
+    return speed
+  }
+
   function detectorOpts () {
     return {
       startKnots: options.startKnots,
       stopKnots: options.stopKnots,
       startMinSeconds: options.startMinSeconds,
       stopMinSeconds: options.stopMinSeconds,
+      stopSpreadMeters: options.stopSpreadMeters,
       minTackSeconds: options.minNewTackSeconds != null ? options.minNewTackSeconds : 90,
       runDeadbandDeg: options.runDeadbandDeg != null ? options.runDeadbandDeg : 10,
       smoothSeconds: options.twaSmoothingSeconds != null ? options.twaSmoothingSeconds : 10,
@@ -824,6 +867,7 @@ module.exports = function (app) {
         stopKnots: 0.3,
         startMinSeconds: 180,
         stopMinSeconds: 600,
+        stopSpreadMeters: 50,
         minNewTackSeconds: 90,
         runDeadbandDeg: 10,
         twaSmoothingSeconds: 10,
@@ -873,6 +917,7 @@ module.exports = function (app) {
       Object.assign(detectorOpts(), { initialMoving: !!active })
     )
     maneuverDetector = createManeuverDetector(detectorOpts())
+    speedGate = createSpeedGate()
     seedEngineState()
 
     const engineStatePath = options.engineStatePath || 'propulsion.0.state'
@@ -894,13 +939,15 @@ module.exports = function (app) {
         ;(delta.updates || []).forEach((u) => {
           ;(u.values || []).forEach((v) => {
             if (v.path === 'navigation.speedOverGround' && typeof v.value === 'number') {
+              lastSOG = v.value
               feedSog(now, v.value)
             } else if (v.path === 'navigation.speedThroughWater' && typeof v.value === 'number') {
               lastSTW = v.value
             } else if (v.path === 'environment.wind.angleTrueWater' && typeof v.value === 'number') {
-              maneuverDetector.feed(now, v.value, lastSTW, onManeuver)
+              maneuverDetector.feed(now, v.value, gatedSpeed(now, lastSTW, lastSOG), onManeuver)
             } else if (v.path === 'navigation.position' && v.value && typeof v.value.latitude === 'number') {
               lastPosition = { lat: v.value.latitude, lon: v.value.longitude }
+              tripDetector.feedPosition(now, lastPosition.lat, lastPosition.lon)
               positionTrail.push([now, lastPosition.lat, lastPosition.lon])
               while (positionTrail.length && now - positionTrail[0][0] > trailWindowMs()) {
                 positionTrail.shift()
@@ -939,6 +986,9 @@ module.exports = function (app) {
     lastPosition = null
     positionTrail = []
     lastSTW = null
+    lastSOG = null
+    speedGate = null
+    fouledLogSeen = false
     liveEngineState = null
     liveEngineOnSince = null
     // Discard the partial SOG bucket; the mean must not straddle a restart.
