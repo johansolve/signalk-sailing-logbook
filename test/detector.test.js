@@ -255,6 +255,186 @@ describe('createManeuverDetector', function () {
     assert.equal(events[0].type, 'tack')
   })
 
+  // Feed true and apparent angles together, the way both real paths do. twaDeg
+  // and awaDeg are read per second over the span.
+  function sail (d, from, seconds, twaDeg, awaDeg, cb) {
+    for (let s = from; s <= from + seconds; s += 1) {
+      if (awaDeg != null) {
+        d.feedApparent(at(s), deg(awaDeg))
+      }
+      d.feed(at(s), deg(twaDeg), 4, cb)
+    }
+  }
+
+  it('does not count a crossing that never reaches a new tack', function () {
+    // 2026-08-02, 12:20: rounding up to drop sails, the bow wandered across the
+    // wind from 5.5° to 5.3° and stayed there. The side changed; nobody tacked.
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0, smoothSeconds: 0 })
+    const events = []
+    const cb = (m) => events.push(m)
+    sail(d, 0, 10, 5.5, 4, cb)
+    sail(d, 11, 190, -5.3, -4, cb)
+    assert.equal(events.length, 0)
+  })
+
+  it('counts one that bears away and luffs up again inside the window', function () {
+    // Tacked, filled on the new tack, then came back up to the wind well before
+    // the hold window closed: still a tack, whatever the angle when it fires.
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0, smoothSeconds: 0 })
+    const events = []
+    const cb = (m) => events.push(m)
+    sail(d, 0, 10, 42, 26, cb)
+    sail(d, 11, 15, -45, -28, cb)
+    sail(d, 26, 175, -8, -6, cb)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].type, 'tack')
+    assert.ok(events[0].twaAfter < deg(30), 'and it fired while she was back up at 8°')
+  })
+
+  it('judges it on apparent wind, which a fouled log cannot drag down', function () {
+    // 2026-08-01: weed on the paddlewheel, STW reads zero, and the derived true
+    // wind angle collapses onto the apparent one. A boat beating at 42° true now
+    // reports 26°, and a threshold read off that angle would reject every tack of
+    // the day — the same silent failure the speed gate's fallback was written for.
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0, smoothSeconds: 0 })
+    const events = []
+    const cb = (m) => events.push(m)
+    sail(d, 0, 10, 26, 26, cb) // true == apparent: the log is dead
+    sail(d, 11, 190, -26, -26, cb)
+    assert.equal(events.length, 1, 'the apparent angle is unchanged, so the tack still counts')
+  })
+
+  it('is not settled by a single noisy reading', function () {
+    // What the real 12:20 case looked like: three quarters of a minute inside 8°
+    // apparent, carrying one 20.9° sample lasting a second. Read raw, that one
+    // sample clears a 20° threshold on its own and the maneuver counts. The
+    // spike sits well after the flip, so it lands inside the pending maneuver
+    // rather than before it exists.
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0 })
+    const events = []
+    const cb = (m) => events.push(m)
+    for (let s = 0; s <= 20; s += 1) {
+      d.feedApparent(at(s), deg(6))
+      d.feed(at(s), deg(6.5), 4, cb)
+    }
+    for (let s = 21; s <= 200; s += 1) {
+      d.feedApparent(at(s), deg(s === 50 ? -20.9 : -6))
+      d.feed(at(s), deg(-6.5), 4, cb)
+    }
+    assert.equal(events.length, 0)
+  })
+
+  it('is not settled by a vane swinging across the wind', function () {
+    // Head to wind under engine with the genoa flogging, the vane swings ±25°
+    // either side. Averaged as magnitudes that reads as a steady 25° off the
+    // wind — a new tack that never happened. Averaged as a vector it cancels.
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0 })
+    const events = []
+    const cb = (m) => events.push(m)
+    for (let s = 0; s <= 20; s += 1) {
+      d.feedApparent(at(s), deg(s % 2 ? 25 : -25))
+      d.feed(at(s), deg(5.5), 4, cb)
+    }
+    for (let s = 21; s <= 200; s += 1) {
+      d.feedApparent(at(s), deg(s % 2 ? 25 : -25))
+      d.feed(at(s), deg(-5.3), 4, cb)
+    }
+    assert.equal(events.length, 0)
+  })
+
+  it('lapses when the masthead falls silent mid-maneuver', function () {
+    // The angle caught as she crossed the wind says nothing about where she
+    // ended up. Frozen as the verdict it would condemn a real tack, so the
+    // requirement has to lapse with the sensor rather than hold its last word.
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0, smoothSeconds: 0 })
+    const events = []
+    const cb = (m) => events.push(m)
+    sail(d, 0, 10, 42, 26, cb)
+    d.feedApparent(at(11), deg(-3)) // caught mid-crossing, then nothing more
+    sail(d, 11, 190, -45, null, cb)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].newTackAngle, null, 'and it is reported as unjudged')
+  })
+
+  it('lets a gybe through with the smoothing on', function () {
+    // Near dead-downwind the vector mean has to wrap correctly: +170 and -170
+    // average to 180, not to 0.
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0, runDeadbandDeg: 5 })
+    const events = []
+    const cb = (m) => events.push(m)
+    for (let s = 0; s <= 20; s += 1) {
+      d.feedApparent(at(s), deg(s % 2 ? 170 : 176))
+      d.feed(at(s), deg(163), 4, cb)
+    }
+    for (let s = 21; s <= 200; s += 1) {
+      d.feedApparent(at(s), deg(s % 2 ? -170 : -176))
+      d.feed(at(s), deg(-169), 4, cb)
+    }
+    assert.equal(events.length, 1)
+    assert.equal(events[0].type, 'gybe')
+  })
+  it('drops the requirement rather than guess when apparent wind is missing', function () {
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0, smoothSeconds: 0 })
+    const events = []
+    const cb = (m) => events.push(m)
+    sail(d, 0, 10, 42, null, cb)
+    sail(d, 11, 190, -8, null, cb)
+    assert.equal(events.length, 1, 'a missing sensor must not delete maneuvers')
+  })
+
+  it('will not judge by a stale apparent angle', function () {
+    // Lying head to wind at 4° apparent when the masthead goes silent. Two
+    // minutes later she bears away and sails off on the other tack. That old 4°
+    // says nothing about where she ended up, and must not be what condemns the
+    // maneuver — the requirement lapses with the sensor.
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0, smoothSeconds: 0 })
+    const events = []
+    const cb = (m) => events.push(m)
+    sail(d, 0, 10, 6, 4, cb)
+    sail(d, 11, 90, 6, null, cb) // apparent silent from here
+    sail(d, 101, 150, -45, null, cb)
+    assert.equal(events.length, 1)
+  })
+
+  it('holds through the smoothing the live path actually applies', function () {
+    // Every other test here reads raw angles. Live, the side is read from a 10 s
+    // circular mean, which flattens a short excursion onto the new tack: a boat
+    // that fills for a few seconds and rounds straight back up may not register.
+    const run = (fillSeconds) => {
+      const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0 })
+      const events = []
+      const cb = (m) => events.push(m)
+      sail(d, 0, 20, 42, 26, cb)
+      sail(d, 21, fillSeconds - 1, -45, -28, cb)
+      sail(d, 20 + fillSeconds, 180 - fillSeconds, -8, -6, cb)
+      return events.length
+    }
+    assert.equal(run(4), 0, 'four seconds on the new tack is lost in the mean')
+    assert.equal(run(15), 1, 'a real settling survives it')
+  })
+
+  it('lets a gybe through, since the threshold is measured off the wind', function () {
+    // Backwinded under a high island: two real gybes that day came out at 168.8°
+    // and 148.9° true. Measuring off the wind, not off dead-downwind, is what
+    // keeps them — a rule symmetric about the run would have thrown one away.
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0, smoothSeconds: 0, runDeadbandDeg: 5 })
+    const events = []
+    const cb = (m) => events.push(m)
+    sail(d, 0, 10, 163, 150, cb)
+    sail(d, 11, 190, -169, -155, cb)
+    assert.equal(events.length, 1)
+    assert.equal(events[0].type, 'gybe')
+  })
+
+  it('switches the requirement off at zero', function () {
+    const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0, smoothSeconds: 0, newTackMinAwaDeg: 0 })
+    const events = []
+    const cb = (m) => events.push(m)
+    sail(d, 0, 10, 5.5, 4, cb)
+    sail(d, 11, 190, -5.3, -4, cb)
+    assert.equal(events.length, 1)
+  })
+
   it('reads raw samples when smoothing is switched off', function () {
     const d = createManeuverDetector({ minTackSeconds: 45, minSpeed: 0, smoothSeconds: 0 })
     const events = []

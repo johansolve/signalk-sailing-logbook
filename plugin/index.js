@@ -52,6 +52,7 @@ module.exports = function (app) {
   let lastSOG = null // most recent speed over ground, the gate's fallback
   let speedGate = null // decides between the two (see createSpeedGate)
   let fouledLogSeen = false // so the fallback is reported once, not per sample
+  let unjudgedManeuverSeen = false // likewise for a missing apparent wind angle
   let liveEngineState = null // last propulsion.<n>.state value we've seen
   let liveEngineOnSince = null // ms when it last changed to 'started', for the gate
   let geocodeEnabled = true
@@ -110,6 +111,13 @@ module.exports = function (app) {
         type: 'number',
         title: 'Degrees past dead-downwind before a side counts (ignores TWA flutter near a dead run)',
         default: 10
+      },
+      newTackMinAwaDeg: {
+        type: 'number',
+        title: 'A maneuver must reach at least this apparent wind angle on the new side to count',
+        description: 'Rounding up to drop sails, the bow crosses the wind and stays there without ever bearing away onto a new tack. Judged on apparent wind, which the masthead measures directly and a fouled log cannot drag down. Set it below your close-hauled apparent angle; measured off the wind it only ever bites on a tack, since a gybe leaves you near dead-downwind anyway. 0 switches the rule off.',
+        default: 20,
+        minimum: 0
       },
       twaSmoothingSeconds: {
         type: 'number',
@@ -649,6 +657,12 @@ module.exports = function (app) {
     if (currentTripId == null) {
       return
     }
+    if (m.newTackAngle == null && !unjudgedManeuverSeen) {
+      unjudgedManeuverSeen = true
+      app.debug(
+        'no apparent wind angle available; the new-tack requirement is inactive ' +
+        'and maneuvers are counted on the side change alone')
+    }
     const trip = db.getTrip(currentTripId)
     const pos = positionNow() || {}
     // Drop maneuvers near the trip start (harbour departure). The end edge is
@@ -761,9 +775,17 @@ module.exports = function (app) {
       // smoothing window spans the same number of samples either way.
       let angles = await influx.twaSeries(startMs, stopMs, 1)
       let angleSource = 'twa'
+      // Apparent wind on the same grid: the new-tack requirement is judged
+      // against it, whether or not it is also standing in for the true angle.
+      const apparent = await influx.awaSeries(startMs, stopMs, 1)
       if (!angles.length) {
-        angles = await influx.awaSeries(startMs, stopMs, 1)
+        angles = apparent
         angleSource = 'awa'
+      }
+      if (!apparent.length) {
+        app.debug(
+          `retro trip ${tripId}: no apparent wind in window; the new-tack ` +
+          'requirement is inactive for it')
       }
       const stw = await influx.stwSeries(startMs, stopMs, 1)
       // The gate's fallback needs speed over ground on the same grid, for a
@@ -796,11 +818,17 @@ module.exports = function (app) {
       // Its own gate, replaying this window's zero runs from the start rather
       // than inheriting whatever state the live one is in.
       const sg = createSpeedGate()
+      // Apparent wind on its own timeline, interleaved rather than sampled at
+      // the true-wind grid: where the true series has a hole, the apparent one
+      // still reaches the detector, as it would live.
+      let nextAwa = 0
       angles.forEach(([t, angle]) => {
-        const speed = sg.speedAt(
-          t,
-          stwAt.has(t) ? stwAt.get(t) : null,
-          sogAt.has(t) ? sogAt.get(t) : null)
+        while (nextAwa < apparent.length && apparent[nextAwa][0] <= t) {
+          md.feedApparent(apparent[nextAwa][0], apparent[nextAwa][1])
+          nextAwa += 1
+        }
+        const stwHere = stwAt.has(t) ? stwAt.get(t) : null
+        const speed = sg.speedAt(t, stwHere, sogAt.has(t) ? sogAt.get(t) : null)
         md.feed(t, angle, speed, (m) => {
           const pos = nearestPos(m.time)
           if (isEdgeManeuver(retroTrip, m.time, pos.lat, pos.lon) || engine.onAt(m.time)) {
@@ -852,6 +880,7 @@ module.exports = function (app) {
       stopSpreadMeters: options.stopSpreadMeters,
       minTackSeconds: options.minNewTackSeconds != null ? options.minNewTackSeconds : 90,
       runDeadbandDeg: options.runDeadbandDeg != null ? options.runDeadbandDeg : 10,
+      newTackMinAwaDeg: options.newTackMinAwaDeg != null ? options.newTackMinAwaDeg : 20,
       smoothSeconds: options.twaSmoothingSeconds != null ? options.twaSmoothingSeconds : 10,
       minSpeed: (options.minSailingSpeedKnots != null ? options.minSailingSpeedKnots : 2) * KNOT
     }
@@ -870,6 +899,7 @@ module.exports = function (app) {
         stopSpreadMeters: 50,
         minNewTackSeconds: 90,
         runDeadbandDeg: 10,
+        newTackMinAwaDeg: 20,
         twaSmoothingSeconds: 10,
         minSailingSpeedKnots: 2,
         maneuverEdgeMarginMinutes: 5,
@@ -928,6 +958,7 @@ module.exports = function (app) {
           { path: 'navigation.speedOverGround', period: 1000 },
           { path: 'navigation.speedThroughWater', period: 1000 },
           { path: 'environment.wind.angleTrueWater', period: 1000 },
+          { path: 'environment.wind.angleApparent', period: 1000 },
           { path: 'navigation.position', period: 5000 },
           { path: engineStatePath, period: 1000 }
         ]
@@ -943,6 +974,10 @@ module.exports = function (app) {
               feedSog(now, v.value)
             } else if (v.path === 'navigation.speedThroughWater' && typeof v.value === 'number') {
               lastSTW = v.value
+            } else if (v.path === 'environment.wind.angleApparent' && typeof v.value === 'number') {
+              // Judged against, not detected from: the side still comes from true
+              // wind. See the new-tack requirement in detector.js.
+              maneuverDetector.feedApparent(now, v.value)
             } else if (v.path === 'environment.wind.angleTrueWater' && typeof v.value === 'number') {
               maneuverDetector.feed(now, v.value, gatedSpeed(now, lastSTW, lastSOG), onManeuver)
             } else if (v.path === 'navigation.position' && v.value && typeof v.value.latitude === 'number') {

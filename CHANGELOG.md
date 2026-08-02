@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.0] - 2026-07-31
+## [0.10.0] - 2026-08-02
 
 ### Added
 - **Every hour of the weather table opens into a graph of itself.** Click an hour
@@ -49,6 +49,37 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   start threshold speed would cover over the last `startMinSeconds`. Swinging
   round a buoy never adds up to that, however long the noise holds. With no
   usable fixes the speed rule decides alone, as before.
+- **Rounding up to drop sails logged a tack.** Changing sides is not the same as
+  tacking: coming head to wind under engine, the bow wanders across and stays
+  there, which on 2026-08-02 recorded a tack going from 5.5° on one side to 5.3°
+  on the other, the boat never bearing away onto anything. The engine gate that
+  should have caught it was blind — engine state is derived from alternator
+  temperature and charge current, and did not report the engine running until two
+  minutes later. A maneuver must now also reach a real new tack,
+  `newTackMinAwaDeg` (default 20) off the wind, at some point within the hold
+  window; reaching it and luffing up again still counts. That angle is read from
+  the **apparent** wind, though the side is still read from the true one: the
+  masthead measures apparent directly, while true wind is derived from it and the
+  speed through water, so a fouled paddlewheel collapses true onto apparent and
+  would drag a true-wind threshold down with it — silently rejecting every tack of
+  the day, the very failure the speed gate's fallback was written for. It is
+  averaged over the same window as the side, since the test asks how far off the
+  wind the boat ever got and a single noisy sample would otherwise settle it: the
+  manoeuvre this rule exists to reject carried one 20.9° reading, lasting a
+  second, in three quarters of a minute otherwise spent inside 8°. The average is
+  a vector one, taken as a magnitude afterwards rather than before — a vane
+  swinging ±25° across the wind, which is what it does head to wind with the
+  genoa flogging, would otherwise read as a steady 25° off it. Where no apparent
+  angle is current the requirement lapses rather than condemning on stale
+  evidence: a masthead that falls silent as the boat crosses the wind would
+  otherwise leave the angle caught mid-crossing standing as the verdict. Each
+  maneuver records the angle it was judged by, so one that passed unjudged is
+  visible rather than silent. Measured off the wind the threshold only ever bites
+  on a tack, since a gybe leaves the boat near dead-downwind anyway — two real
+  ones that day, forced by backwinding under a high island, came out at 168.8° and
+  148.9° true, and a rule symmetric about the run would have thrown one away. Over
+  that day's history it drops five crossings and keeps all four real tacks and
+  both gybes.
 - **A fouled log silently dropped every manoeuvre of the day.** The minimum-speed
   gate reads speed through water, and a paddle wheel blocked by weed does not fail
   loudly — it reads a flat zero, which the gate takes for a drifting boat and

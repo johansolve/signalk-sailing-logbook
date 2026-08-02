@@ -261,6 +261,36 @@ function createTripDetector (opts) {
 // > 90°) is a gybe, crossing the bow (upwind, entry < 90°) is a tack. This is
 // robust even when the boat then heads up or bears away to a different angle.
 //
+// Changing sides is not the same as tacking. Rounding up to drop sails under
+// engine, the bow wanders across the wind and stays there: on 2026-08-02 that
+// logged a tack whose angle went from 5.5° on one side to 5.3° on the other,
+// the boat never bearing away onto anything. So a maneuver must also reach a
+// real new tack — settleAngle off the wind — at some point within the hold
+// window. Reaching it and luffing up again still counts; the boat did tack.
+//
+// That angle is read from the *apparent* wind, fed separately via feedApparent,
+// even though the side itself is read from the true wind angle. The masthead
+// measures apparent directly, while true wind is derived from it and the speed
+// through water — so a fouled paddlewheel collapses true onto apparent and would
+// drag any true-wind threshold down with it, silently rejecting every tack of the
+// day. The apparent angle cannot be moved by a broken log. It is also the smaller
+// of the two on the wind (a boat beating at 40-45° true carries 25-28° apparent),
+// so the threshold is set against that.
+//
+// Measured off the wind, the threshold only ever bites on a tack. A gybe leaves
+// the boat somewhere near dead-downwind — two real ones on 2026-08-02, forced by
+// backwinding under a high island, came out at 168.8° and 148.9° true — which
+// clears any sane figure by a mile. That asymmetry is the point: a gybe is
+// settled by the wind crossing the stern, and requiring it to also lie a set
+// angle off dead-downwind would throw away perfectly good ones.
+//
+// With no apparent wind fed at all the requirement is dropped rather than
+// guessed at: a missing sensor must not quietly delete maneuvers.
+//
+// The side change is committed either way. The boat really is on the other
+// side, and pretending otherwise would leave the detector hunting a crossing
+// that has already happened.
+//
 // Each sample also carries the boat's speed (m/s). A maneuver only counts if the
 // boat was above minSpeed at the flip: harbour manoeuvring and mooring turns
 // happen at a crawl under engine and would otherwise register as false tacks.
@@ -270,6 +300,12 @@ function createTripDetector (opts) {
 // fraction of it from one second to the next, and a tack is precisely where the
 // boat slows through the wind, so a single sample decides the gate by luck.
 const SPEED_WINDOW_MS = 30000
+// An apparent angle older than this judges nothing. Both paths feed it at 1 Hz,
+// so this is a wide margin — but it must stay well inside the hold window, or a
+// masthead that falls silent as the boat crosses the wind would leave the angle
+// caught mid-crossing standing as the verdict on where she ended up, and condemn
+// a real tack. Short of fresh evidence the requirement lapses instead.
+const AWA_MAX_AGE_MS = 15000
 
 function createManeuverDetector (opts) {
   const holdMs = (opts.minTackSeconds != null ? opts.minTackSeconds : 90) * 1000
@@ -278,11 +314,15 @@ function createManeuverDetector (opts) {
   const cancelGraceMs = (opts.cancelGraceSeconds != null ? opts.cancelGraceSeconds : 20) * 1000
   const minSpeed = opts.minSpeed != null ? opts.minSpeed : 0
   const smoothMs = (opts.smoothSeconds != null ? opts.smoothSeconds : 10) * 1000
+  const settleAngle = (opts.newTackMinAwaDeg != null ? opts.newTackMinAwaDeg : 20) * Math.PI / 180
 
   let sign = 0 // current confirmed side: -1 port, +1 starboard
   let entryMag = null // |TWA| of the last firmly-committed sample (entry angle)
   let entrySpeed = null // boat speed at that sample (m/s); the pre-maneuver speed
   let pending = null // { sign, since, backSince, twaBefore, twaAfter, speed }
+  const apparents = [] // trailing [timeMs, |awa|] backing the mean below
+  let lastAwa = null // mean |apparent wind angle|, the new-tack test's yardstick
+  let lastAwaAt = null // and when it arrived; a stale one is no yardstick at all
   const angles = [] // trailing [timeMs, twa] window backing the circular mean
   const speeds = [] // trailing [timeMs, speed] window backing the median gate
 
@@ -329,6 +369,52 @@ function createManeuverDetector (opts) {
   }
 
   return {
+    // The apparent wind angle (radians), which the new-tack test is judged by.
+    // Optional: with none of these the test is skipped entirely.
+    //
+    // Averaged over the same window as the side, and for the same reason: the
+    // test asks how far off the wind the boat ever got, so a single noisy sample
+    // would otherwise settle it. On 2026-08-02 the manoeuvre this rule exists to
+    // reject carried one 20.9° reading, lasting a second, in three quarters of a
+    // minute otherwise spent inside 8°.
+    //
+    // Averaged as a vector, like the side, and then taken as a magnitude — not
+    // the other way round. Averaging |angle| would read a vane swinging ±25°
+    // across the wind, which is exactly what it does with the boat head to wind
+    // and the genoa flogging, as a steady 25° off it. As a vector that flutter
+    // cancels to nearly nothing, which is the truth: she is not on a new tack.
+    feedApparent (timeMs, awa) {
+      if (typeof timeMs !== 'number' || Number.isNaN(timeMs)) {
+        return
+      }
+      if (typeof awa !== 'number' || Number.isNaN(awa)) {
+        return
+      }
+      // A time that jumps backwards (a restart, a replayed scan) invalidates the
+      // window rather than leaving two runs interleaved in it.
+      if (apparents.length && timeMs < apparents[apparents.length - 1][0]) {
+        apparents.length = 0
+      }
+      if (smoothMs <= 0) {
+        apparents.length = 0
+        lastAwa = Math.abs(awa)
+        lastAwaAt = timeMs
+        return
+      }
+      apparents.push([timeMs, awa])
+      while (apparents.length > 1 && timeMs - apparents[0][0] > smoothMs) {
+        apparents.shift()
+      }
+      let x = 0
+      let y = 0
+      for (const [, a] of apparents) {
+        x += Math.cos(a)
+        y += Math.sin(a)
+      }
+      lastAwa = Math.abs(Math.atan2(y, x))
+      lastAwaAt = timeMs
+    },
+
     // speed is the boat's speed (m/s) at this sample; pass null to skip gating.
     feed (timeMs, rawTwa, speed, onManeuver) {
       if (typeof timeMs !== 'number' || Number.isNaN(timeMs)) {
@@ -339,6 +425,8 @@ function createManeuverDetector (opts) {
       }
       const twa = meanAngle(timeMs, rawTwa)
       const gateSpeed = medianSpeed(timeMs, speed)
+      const awaAge = lastAwaAt != null ? timeMs - lastAwaAt : null
+      const awa = awaAge != null && awaAge >= 0 && awaAge <= AWA_MAX_AGE_MS ? lastAwa : null
       const side = sideOf(twa)
       if (side === 0) {
         return // undecided, keep last confirmed side and any pending flip
@@ -371,21 +459,47 @@ function createManeuverDetector (opts) {
       // may momentarily slow through the wind, but it was sailing beforehand;
       // harbour turns crawl throughout.
       if (pending == null || pending.sign !== side) {
-        pending = { sign: side, since: timeMs, backSince: null, twaBefore: entryMag, twaAfter: mag, speed: entrySpeed }
+        pending = {
+          sign: side,
+          since: timeMs,
+          backSince: null,
+          twaBefore: entryMag,
+          twaAfter: mag,
+          // Furthest off the wind reached on the new side, apparent. Null until
+          // an apparent angle has been fed, which drops the requirement.
+          maxAwa: awa,
+          speed: entrySpeed
+        }
         return
       }
       pending.backSince = null // back on the new side; reset the cancel timer
       pending.twaAfter = mag
+      if (awa != null) {
+        pending.maxAwa = Math.max(pending.maxAwa != null ? pending.maxAwa : 0, awa)
+      }
       if (timeMs - pending.since >= holdMs) {
         const tooSlow = minSpeed > 0 && pending.speed != null && pending.speed < minSpeed
         const type = pending.twaBefore != null && pending.twaBefore > Math.PI / 2 ? 'gybe' : 'tack'
-        const ev = { time: pending.since, type, twaBefore: pending.twaBefore, twaAfter: pending.twaAfter }
+        // The maneuver has to have arrived somewhere — but only where there is
+        // current evidence to say it did not. A masthead that has gone quiet
+        // cannot condemn it.
+        const unsettled = awa != null && pending.maxAwa != null && pending.maxAwa < settleAngle
+        const ev = {
+          time: pending.since,
+          type,
+          twaBefore: pending.twaBefore,
+          twaAfter: pending.twaAfter,
+          // How far off the wind she actually got, apparent, or null where no
+          // apparent wind was available to judge by. Reported so a maneuver that
+          // passed unjudged is visible rather than silent.
+          newTackAngle: awa != null ? pending.maxAwa : null
+        }
         sign = side
         entryMag = mag
         entrySpeed = gateSpeed
         pending = null
-        // The side did change, so commit it; only suppress the count when slow.
-        if (!tooSlow && onManeuver) {
+        // The side did change, so commit it; only suppress the count.
+        if (!tooSlow && !unsettled && onManeuver) {
           onManeuver(ev)
         }
       }

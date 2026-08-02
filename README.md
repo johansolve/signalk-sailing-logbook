@@ -60,8 +60,9 @@ browser** — any browser with the **WebCodecs API**, even Safari on an iPhone �
   to `environment.wind.angleApparent` for a retrospective scan when the
   true-wind derivation logged nothing for that stretch), robust to real-world
   noise:
-  - counts a maneuver only if the new tack is held long enough (rejects false
-    tacks while hoisting or dropping sails),
+  - counts a maneuver only if the new tack is held long enough, and — for a tack —
+    if the boat actually bore away onto it, rather than crossing the wind and
+    lying there while the sails come down,
   - a dead-run deadband ignores the wind-angle flutter near a dead run,
   - flip-flop tolerance survives a drawn-out maneuver that wanders across the
     wind before settling,
@@ -146,6 +147,7 @@ to point it elsewhere (ideally an SSD, if your data directory sits on an SD card
 | `stopSpreadMeters` | 50 | also end a trip when every fix over the stop window stays within this many metres; 0 turns the position rules off |
 | `minNewTackSeconds` | 90 | min time on the new tack for a maneuver to count |
 | `runDeadbandDeg` | 10 | degrees past dead-downwind before a side counts |
+| `newTackMinAwaDeg` | 20 | a maneuver must reach this *apparent* wind angle on the new side; set it below your close-hauled apparent angle. 0 switches it off |
 | `minSailingSpeedKnots` | 2 | min boat speed (STW) for a maneuver to count |
 | `maneuverEdgeMarginMinutes` | 5 | ignore maneuvers within N minutes of trip start/end |
 | `maneuverEdgeRadiusMeters` | 200 | ignore maneuvers within N metres of the start/end |
