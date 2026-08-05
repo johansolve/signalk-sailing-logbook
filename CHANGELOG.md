@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-08-05
+
+### Added
+- **The column abbreviations are spelled out** under the weather table, in both
+  languages. STW, TWS, TWD, TWA and AWA are second nature to anyone who has read
+  an instrument display for a season and opaque to everyone else, and they head
+  the graphs as well as the table.
+
 ## [0.10.0] - 2026-08-03
 
 ### Added

@@ -50,6 +50,7 @@ const STR = {
     notesPlaceholder: 'Your own notes for this trip…',
     speed: 'Speed', time: 'Time', timeline: 'Timeline', dragToResize: 'Drag to resize the map',
     hourlyWeather: 'Hourly weather', hr: 'Hr', heel: 'Heel',
+    termNote: 'STW = speed through the water, TWS = true wind speed, TWD = true wind direction, TWA = true wind angle (off the bow), AWA = apparent wind angle.',
     unitNote: 'Mean with p10–p90 range; TWA/AWA show the dominant side (S/P); TWD is the circular mean with ±angular deviation.',
     noWeather: 'No weather statistics (trip has no end time or no data).',
     trendNote: 'The half hour before the marker, newest at the top.',
@@ -109,6 +110,7 @@ const STR = {
     notesPlaceholder: 'Egna anteckningar för den här tripen…',
     speed: 'Fart', time: 'Tid', timeline: 'Tidslinje', dragToResize: 'Dra för att ändra kartans storlek',
     hourlyWeather: 'Timväder', hr: 'Tim', heel: 'Kräng',
+    termNote: 'STW = fart genom vattnet, TWS = sann vindstyrka, TWD = sann vindriktning, TWA = sann vindvinkel (från fören), AWA = skenbar vindvinkel.',
     unitNote: 'Medel med p10–p90-intervall; TWA/AWA visar dominerande sida (SB/BB); TWD är cirkulärt medel med ±vinkelavvikelse.',
     noWeather: 'Ingen väderstatistik (tripen saknar sluttid eller data).',
     trendNote: 'Halvtimmen före markören, senaste överst.',
@@ -698,6 +700,7 @@ function fillHourly (hourly) {
         </tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
+      <p class="unit-note">${t('termNote')}</p>
       <p class="unit-note">${t('unitNote')}</p>`
     : `<p class="hint">${t('noWeather')}</p>`
   // A row opens its own graph; it is a row, not a <details>, because a table

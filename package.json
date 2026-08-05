@@ -1,6 +1,6 @@
 {
   "name": "signalk-sailing-logbook",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "displayName": "Sailing Logbook",
   "description": "Automatic sailing logbook for Signal K: detects trips, counts tacks and gybes, and reports hourly wind and heel statistics. Replays a whole passage on the map and exports it as a video, rendered entirely in your browser. English and Swedish.",
   "main": "plugin/index.js",
