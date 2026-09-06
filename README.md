@@ -107,6 +107,11 @@ browser** — any browser with the **WebCodecs API**, even Safari on an iPhone �
   `navigation.position`, `environment.wind.speedTrue`,
   `environment.wind.angleTrueWater`, `environment.wind.angleApparent`,
   `environment.wind.directionTrue`, `navigation.attitude.roll`.
+
+  **Switch on that plugin's "Record Track"** — it is off by default, and without
+  it no position reaches the database, so trips have no map and a retrospective
+  scan cannot place them. Its "Latitude and Longitude as separate measurements"
+  option is optional: the logbook reads the position either way.
 - **Node.js ≥ 22.5** — storage uses the built-in `node:sqlite`, so there is no
   native module to compile.
 - **A `propulsion.<n>.state` provider** (`started` / `stopped`) for the

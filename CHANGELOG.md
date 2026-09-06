@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **The track map works without `signalk-to-influxdb`'s `separateLatLon` option.**
+  That plugin always writes the position as a JSON string in `jsonValue` and only
+  adds separate `lat`/`lon` float fields when that option is switched on, which it
+  is not by default. The logbook read nothing but `lat`/`lon`, so on a default
+  install every map was empty while the rest of the trip — built from live deltas
+  and from the scalar history — looked perfectly normal. It now reads both shapes
+  in the same request and merges them per bucket, the floats winning where both
+  are there. Merging rather than falling back matters for a database where the
+  option was switched on part-way: the floats begin at the flip, and a track,
+  a history scan or a retro trip's start position taken from them alone would
+  silently begin there too.
+  ([#1](https://github.com/johansolve/signalk-sailing-logbook/issues/1))
+
 ## [0.10.1] - 2026-08-05
 
 ### Added

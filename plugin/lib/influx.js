@@ -1,8 +1,9 @@
 /*
  * InfluxDB 1.x access. The onboard signalk-to-influxdb stores every Signal K
  * path as its own measurement with the sample in the "value" column, positions
- * additionally as "lat"/"lon". All statistics are derived here from that raw
- * history, so nothing is duplicated into SQLite.
+ * as a JSON string in "jsonValue" and, only when its "separateLatLon" option is
+ * on, additionally as "lat"/"lon" floats. All statistics are derived here from
+ * that raw history, so nothing is duplicated into SQLite.
  *
  * Every query is bounded to a real [startMs, stopMs] window, which also excludes
  * the handful of mis-timestamped GPS points (epoch 0 and year-2061) that the
@@ -31,6 +32,29 @@ const ANGLE_KEYS = new Set(['twa', 'awa', 'twd'])
 
 function quoteMeasurement (m) {
   return m.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+// One position out of signalk-to-influxdb's JSON string field, as [lat, lon].
+// Anything unparseable or incomplete is dropped rather than plotted at null
+// island. Returns null for a row that carries no usable pair.
+function parseJsonPosition (s) {
+  if (typeof s !== 'string') {
+    return null
+  }
+  let o
+  try {
+    o = JSON.parse(s)
+  } catch (e) {
+    return null
+  }
+  if (!o || typeof o !== 'object') {
+    return null
+  }
+  // Numbers only: Number(null) and Number('') are a finite 0, which would put
+  // a fix with a missing coordinate on null island rather than dropping it.
+  return Number.isFinite(o.latitude) && Number.isFinite(o.longitude)
+    ? [o.latitude, o.longitude]
+    : null
 }
 
 function makeInflux (config) {
@@ -80,6 +104,44 @@ function makeInflux (config) {
     return `time >= ${lo}ms AND time <= ${hi}ms`
   }
 
+  // The two ways signalk-to-influxdb stores a position, asked for on one time
+  // grid: the "lat"/"lon" floats, which the database downsamples with mean(),
+  // and the "jsonValue" string it always writes, downsampled with first()
+  // (InfluxQL allows that on a string field, so this costs a query, not a raw
+  // scan). Both statements ride in one request, and mergePositions decides per
+  // bucket — asking for the floats first and only falling back on an empty
+  // answer would read a database where separateLatLon was switched on
+  // mid-history as if it began at the flip.
+  function positionStatements (w, step) {
+    const m = quoteMeasurement(paths.position)
+    return [
+      `SELECT mean("lat") AS lat, mean("lon") AS lon FROM "${m}" ` +
+        `WHERE ${w} GROUP BY time(${step}s) fill(none)`,
+      `SELECT first("jsonValue") AS p FROM "${m}" ` +
+        `WHERE ${w} GROUP BY time(${step}s) fill(none)`
+    ]
+  }
+
+  // Those two results as one ascending [[t, lat, lon], ...]. Buckets are keyed
+  // by timestamp, which both statements share because InfluxQL aligns
+  // GROUP BY time() to epoch boundaries rather than to the window start; where
+  // a bucket has both, the averaged floats win over the sampled JSON.
+  function mergePositions (latlon, json) {
+    const out = new Map()
+    for (const [t, s] of json.values) {
+      const ll = parseJsonPosition(s)
+      if (ll) {
+        out.set(t, [t, ll[0], ll[1]])
+      }
+    }
+    for (const [t, lat, lon] of latlon.values) {
+      if (lat != null && lon != null) {
+        out.set(t, [t, lat, lon])
+      }
+    }
+    return Array.from(out.values()).sort((a, b) => a[0] - b[0])
+  }
+
   function rowsToObjects (result) {
     const { columns, values } = result
     return values.map((v) => {
@@ -92,6 +154,20 @@ function makeInflux (config) {
   }
 
   return {
+    // Whether the database knows the position measurement at all. A metadata
+    // query, so it costs nothing to ask; it separates "nothing has ever written
+    // a position here" — signalk-to-influxdb with Record Track off — from "that
+    // particular trip logged no fixes", which is the difference between a
+    // setting to change and nothing to do. It reads the index rather than the
+    // data, so a measurement whose points have all aged out of the retention
+    // policy still counts as history until its shards are dropped.
+    async hasPositionHistory () {
+      const [res] = await run(
+        `SHOW MEASUREMENTS WITH MEASUREMENT = "${quoteMeasurement(paths.position)}"`
+      )
+      return res.values.length > 0
+    },
+
     // Per-hour statistics across the trip window. p10/p90 are the "significant"
     // min/max (raw extremes filtered out); angles and heel use the absolute
     // value so mean pointing angle / mean heel magnitude are not cancelled out
@@ -280,29 +356,45 @@ function makeInflux (config) {
     // Downsampled position series [[t, lat, lon], ...] used to place retro
     // maneuvers for the geographic edge gate.
     async positionSeries (startMs, stopMs, stepSec) {
-      const m = quoteMeasurement(paths.position)
-      const [res] = await run(
-        `SELECT mean("lat") AS lat, mean("lon") AS lon FROM "${m}" ` +
-          `WHERE ${window(startMs, stopMs)} ` +
-          `GROUP BY time(${stepSec || 15}s) fill(none)`
-      )
-      return res.values.map((v) => [v[0], v[1], v[2]]).filter((p) => p[1] != null && p[2] != null)
+      const w = window(startMs, stopMs)
+      const [latlon, json] = await run(positionStatements(w, stepSec || 15))
+      return mergePositions(latlon, json)
     },
 
     // First and last known position within the window; used to place retro
-    // trips that have no live position. The position measurement stores lat/lon
-    // as separate float fields.
+    // trips that have no live position. Both storage shapes are asked for in one
+    // request, and the JSON string wins when it answers: signalk-to-influxdb
+    // writes it for every position, so it is the complete series, while the
+    // floats are a subset that begins wherever separateLatLon was switched on.
+    // The floats are read for a database whose positions came from somewhere
+    // else and carry no JSON at all.
     async positionBounds (startMs, stopMs) {
       const m = quoteMeasurement(paths.position)
-      const [res] = await run(
+      const w = window(startMs, stopMs)
+      const [res, jres] = await run([
         `SELECT first("lat") AS slat, first("lon") AS slon, ` +
           `last("lat") AS elat, last("lon") AS elon ` +
-          `FROM "${m}" WHERE ${window(startMs, stopMs)}`
-      )
+          `FROM "${m}" WHERE ${w}`,
+        `SELECT first("jsonValue") AS s, last("jsonValue") AS e FROM "${m}" WHERE ${w}`
+      ])
+      const jrow = rowsToObjects(jres)[0] || {}
       const row = rowsToObjects(res)[0] || {}
+      // Each end decides for itself: one malformed JSON string must not throw
+      // away a float answer that was there all along, which would leave a retro
+      // trip with a null end and no edge for the maneuver gate to sit on.
+      const end = (json, lat, lon) => {
+        const p = parseJsonPosition(json)
+        if (p) {
+          return { lat: p[0], lon: p[1] }
+        }
+        return {
+          lat: lat != null ? lat : null,
+          lon: lon != null ? lon : null
+        }
+      }
       return {
-        start: { lat: row.slat != null ? row.slat : null, lon: row.slon != null ? row.slon : null },
-        stop: { lat: row.elat != null ? row.elat : null, lon: row.elon != null ? row.elon : null }
+        start: end(jrow.s, row.slat, row.slon),
+        stop: end(jrow.e, row.elat, row.elon)
       }
     },
 
@@ -383,36 +475,34 @@ function makeInflux (config) {
     async trackSeries (startMs, stopMs, stepSec) {
       const step = stepSec || 15
       const w = window(startMs, stopMs)
-      const pm = quoteMeasurement(paths.position)
       const fields = [
         ['sog', paths.sog], ['stw', paths.stw], ['tws', paths.tws],
         ['twd', paths.twd], ['twa', paths.twa], ['awa', paths.awa], ['heel', paths.heel]
       ]
+      // Both position statements, then the scalars: results[0] and results[1]
+      // are the position, results[2..] the fields.
       const results = await run([
-        `SELECT mean("lat") AS lat, mean("lon") AS lon FROM "${pm}" ` +
-          `WHERE ${w} GROUP BY time(${step}s) fill(none)`,
+        ...positionStatements(w, step),
         ...fields.map(([, path]) =>
           `SELECT mean("value") AS v FROM "${quoteMeasurement(path)}" ` +
           `WHERE ${w} GROUP BY time(${step}s) fill(none)`)
       ])
       const maps = fields.map((_, i) => {
         const mp = new Map()
-        for (const row of results[i + 1].values) {
+        for (const row of results[i + 2].values) {
           if (row[1] != null) {
             mp.set(row[0], row[1])
           }
         }
         return mp
       })
-      return results[0].values
-        .filter((r) => r[1] != null && r[2] != null)
-        .map((r) => {
-          const point = { t: r[0], lat: r[1], lon: r[2] }
-          fields.forEach(([key], i) => {
-            point[key] = maps[i].has(r[0]) ? maps[i].get(r[0]) : null
-          })
-          return point
+      return mergePositions(results[0], results[1]).map((r) => {
+        const point = { t: r[0], lat: r[1], lon: r[2] }
+        fields.forEach(([key], i) => {
+          point[key] = maps[i].has(r[0]) ? maps[i].get(r[0]) : null
         })
+        return point
+      })
     }
   }
 }
