@@ -4,7 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.1] - 2026-09-06
+
+### Added
+- **The map box says why there is no map.** It used to collapse without a word,
+  which is a poor thing to do with the one part of the page that has an obvious
+  cause and often a cure. The track endpoint now reports which case it is, and
+  the box carries the reason: no position logged for this trip, no position
+  history in the database at all (naming `signalk-to-influxdb`'s "Record Track"
+  option, which is off by default), the track failed to load, or the map library
+  did not. Telling the two empty-database cases apart is a metadata query, so it
+  costs nothing on a trip that does have a track.
+- **The column abbreviations are spelled out** under the weather table, in both
+  languages. STW, TWS, TWD, TWA and AWA are second nature to anyone who has read
+  an instrument display for a season and opaque to everyone else, and they head
+  the graphs as well as the table.
 
 ### Fixed
 - **The track map works without `signalk-to-influxdb`'s `separateLatLon` option.**
@@ -22,24 +36,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Hiding the map leaves nothing behind.** A trip with no track hid the map but
   left its drag handle and an empty info panel on the page: both are laid out by
   an author `display` rule, which outranks the browser's `[hidden]`.
-
-### Added
-- **The map box says why there is no map.** It used to collapse without a word,
-  which is a poor thing to do with the one part of the page that has an obvious
-  cause and often a cure. The track endpoint now reports which case it is, and
-  the box carries the reason: no position logged for this trip, no position
-  history in the database at all (naming `signalk-to-influxdb`'s "Record Track"
-  option, which is off by default), the track failed to load, or the map library
-  did not. Telling the two empty-database cases apart is a metadata query, so it
-  costs nothing on a trip that does have a track.
-
-## [0.10.1] - 2026-08-05
-
-### Added
-- **The column abbreviations are spelled out** under the weather table, in both
-  languages. STW, TWS, TWD, TWA and AWA are second nature to anyone who has read
-  an instrument display for a season and opaque to everyone else, and they head
-  the graphs as well as the table.
 
 ## [0.10.0] - 2026-08-03
 
