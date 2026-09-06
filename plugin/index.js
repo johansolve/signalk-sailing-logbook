@@ -1197,12 +1197,25 @@ module.exports = function (app) {
     }
     const stopMs = trip.stop_time || Date.now()
     if (!trip.start_time || stopMs <= trip.start_time) {
-      return res.json({ points: [] })
+      return res.json({ points: [], reason: 'no-window' })
     }
     // Aim for ~600 points; never finer than 5 s.
     const stepSec = Math.max(5, Math.round((stopMs - trip.start_time) / 1000 / 600))
     try {
       const points = await influx.trackSeries(trip.start_time, stopMs, stepSec)
+      // Too little to draw a line: say which case it is, so the webapp can tell
+      // the reader whether there is a setting to change or simply no track. A
+      // single point is its own answer — the trip did log a position, so asking
+      // the database whether any exists would be both wasteful and wrong.
+      if (points.length === 1) {
+        return res.json({ points: [], reason: 'too-few-positions' })
+      }
+      if (!points.length) {
+        const reason = (await influx.hasPositionHistory())
+          ? 'no-position-in-trip'
+          : 'no-position-logged'
+        return res.json({ points: [], reason })
+      }
       // Flag each point that fell under engine, so the map's info panel can badge
       // it (same engine-state source as the hourly table and maneuver gating).
       const engine = await analyzeTripEngine(trip.start_time, stopMs)

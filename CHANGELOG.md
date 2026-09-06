@@ -19,6 +19,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a history scan or a retro trip's start position taken from them alone would
   silently begin there too.
   ([#1](https://github.com/johansolve/signalk-sailing-logbook/issues/1))
+- **Hiding the map leaves nothing behind.** A trip with no track hid the map but
+  left its drag handle and an empty info panel on the page: both are laid out by
+  an author `display` rule, which outranks the browser's `[hidden]`.
+
+### Added
+- **The map box says why there is no map.** It used to collapse without a word,
+  which is a poor thing to do with the one part of the page that has an obvious
+  cause and often a cure. The track endpoint now reports which case it is, and
+  the box carries the reason: no position logged for this trip, no position
+  history in the database at all (naming `signalk-to-influxdb`'s "Record Track"
+  option, which is off by default), the track failed to load, or the map library
+  did not. Telling the two empty-database cases apart is a metadata query, so it
+  costs nothing on a trip that does have a track.
 
 ## [0.10.1] - 2026-08-05
 

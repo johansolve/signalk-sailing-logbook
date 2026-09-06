@@ -53,6 +53,11 @@ const STR = {
     termNote: 'STW = speed through the water, TWS = true wind speed, TWD = true wind direction, TWA = true wind angle (off the bow), AWA = apparent wind angle.',
     unitNote: 'Mean with p10–p90 range; TWA/AWA show the dominant side (S/P); TWD is the circular mean with ±angular deviation.',
     noWeather: 'No weather statistics (trip has no end time or no data).',
+    noTrackInTrip: 'No map: this trip logged no position.',
+    noTrackTooFew: 'No map: only one position was logged for this trip.',
+    noTrackLogged: 'No map: InfluxDB holds no position history. Switch on “Record Track” in the signalk-to-influxdb plugin to log the boat’s position.',
+    noTrackLoad: 'No map: the track could not be loaded.',
+    noTrackMapLib: 'No map: the map library did not load.',
     trendNote: 'The half hour before the marker, newest at the top.',
     hourGraph: 'Show the hour minute by minute',
     hourGraphNote: 'The hour minute by minute, newest at the bottom. Each column is scaled to its own range for this hour.',
@@ -113,6 +118,11 @@ const STR = {
     termNote: 'STW = fart genom vattnet, TWS = sann vindstyrka, TWD = sann vindriktning, TWA = sann vindvinkel (från fören), AWA = skenbar vindvinkel.',
     unitNote: 'Medel med p10–p90-intervall; TWA/AWA visar dominerande sida (SB/BB); TWD är cirkulärt medel med ±vinkelavvikelse.',
     noWeather: 'Ingen väderstatistik (tripen saknar sluttid eller data).',
+    noTrackInTrip: 'Ingen karta: tripen har ingen loggad position.',
+    noTrackTooFew: 'Ingen karta: bara en position loggades för den här tripen.',
+    noTrackLogged: 'Ingen karta: InfluxDB saknar positionshistorik. Slå på ”Record Track” i signalk-to-influxdb för att logga båtens position.',
+    noTrackLoad: 'Ingen karta: spåret kunde inte hämtas.',
+    noTrackMapLib: 'Ingen karta: kartbiblioteket kunde inte laddas.',
     trendNote: 'Halvtimmen före markören, senaste överst.',
     hourGraph: 'Visa timmen minut för minut',
     hourGraphNote: 'Timmen minut för minut, senaste längst ner. Varje kolumn är skalad efter sitt eget spann under timmen.',
@@ -455,7 +465,8 @@ function renderDetail (data) {
 
     <!-- Shown from the start (its water backdrop is a placeholder) so the map's
          height is reserved at load and the content below doesn't jump when the
-         async track resolves. renderTrack hides it only if the trip has no track. -->
+         async track resolves. A trip with no track keeps the box and fills it
+         with the reason (renderTrack). -->
     <div id="trackmap" class="trackmap"></div>
     <div id="map-resize" class="map-resize" title="${t('dragToResize')}" hidden></div>
     <div id="track-info" class="track-info" hidden></div>
@@ -898,26 +909,42 @@ function scrubToEvent (ev, move) {
   }
 }
 
+// The reasons the server gives for an empty track, in the reader's words. A
+// trip with no fixes of its own and a database that logs no position at all are
+// not the same thing: the second one names the setting that would fix it.
+const NO_TRACK_TEXT = {
+  'no-position-logged': 'noTrackLogged',
+  'no-position-in-trip': 'noTrackInTrip',
+  'too-few-positions': 'noTrackTooFew',
+  'no-window': 'noTrackInTrip'
+}
+
+// Say in the map's own box why there is no map, rather than silently collapsing
+// it and leaving the reader to guess.
+function noTrack (host, key) {
+  host.classList.add('trackmap-empty')
+  host.textContent = t(key)
+}
+
 // Fetch the downsampled position+SOG track and draw it on a Leaflet map with an
 // OSM base and the OpenSeaMap seamark overlay. Tiles need the network; offline
 // they simply don't load and the speed-coloured track shows on a blank canvas.
-// A trip with fewer than two points (no logged position) hides the map.
+// A trip with fewer than two points (no logged position) shows why instead.
 async function renderTrack (id, events) {
   const host = document.getElementById('trackmap')
   if (!host) {
     return
   }
-  // Leaflet failed to load: collapse the reserved box, there's nothing to draw.
   if (typeof L === 'undefined') {
-    host.hidden = true
+    noTrack(host, 'noTrackMapLib')
     return
   }
   teardownTrack()
-  let points
+  let data
   try {
-    points = (await getJSON(`${READ}/trips/${id}/track`)).points || []
+    data = await getJSON(`${READ}/trips/${id}/track`)
   } catch (e) {
-    host.hidden = true
+    noTrack(host, 'noTrackLoad')
     return
   }
   // A fast back-and-forth to another trip may have replaced #detail while the
@@ -925,10 +952,9 @@ async function renderTrack (id, events) {
   if (!host.isConnected) {
     return
   }
-  // No logged position (or a single point): collapse the reserved box so a
-  // trackless trip doesn't leave an empty placeholder.
+  const points = data.points || []
   if (points.length < 2) {
-    host.hidden = true
+    noTrack(host, NO_TRACK_TEXT[data.reason] || 'noTrackInTrip')
     return
   }
 
@@ -940,7 +966,8 @@ async function renderTrack (id, events) {
 }
 
 function drawTrack (host, points, events) {
-  host.hidden = false
+  host.classList.remove('trackmap-empty')
+  host.textContent = ''
 
   const map = L.map(host, { zoomControl: true })
   trackMap = map

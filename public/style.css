@@ -509,6 +509,14 @@ input {
   z-index: 0;
 }
 
+/* An author display outranks the UA's [hidden] rule, so anything laid out by one
+   needs its own — without this, a trip with no track left the bare drag handle
+   and an empty info panel behind. The map box is here for the same reason: it
+   has no display of its own, but .trackmap-empty below gives it one. */
+.map-resize[hidden], .track-info[hidden], .trackmap[hidden] {
+  display: none;
+}
+
 /* Drag handle under the map to grow/shrink it for this view (works with touch,
    unlike CSS resize). The height is never persisted, so reopening a trip returns
    to the default. */
@@ -537,6 +545,24 @@ input {
     background: #0d2b38;
   }
 }
+
+/* Nothing to draw: the box keeps its frame and carries the reason instead of
+   collapsing and leaving the reader to guess. Panel colours rather than the
+   water backdrop, so the text reads in both themes. Placed after the dark
+   block above, which it has to outrank. */
+.trackmap-empty {
+  height: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.1rem 1.25rem;
+  text-align: center;
+  text-wrap: balance;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .track-legend {
   display: flex;
   align-items: center;
