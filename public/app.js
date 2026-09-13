@@ -729,6 +729,14 @@ function fillHourly (hourly) {
 
 // ---- track map -----------------------------------------------------------
 
+// Signal K's server sends `Referrer-Policy: no-referrer`, and OpenStreetMap's
+// tile policy blocks referer-stripped traffic — serving a "blocked" tile as a
+// normal PNG with HTTP 200, so the network log looks perfectly healthy while
+// every map reads "Access blocked". An image's own referrerpolicy overrides the
+// document's, so each tile layer sets one. Origin only: the tile servers are
+// owed an identification, not the path of the page being read.
+const TILE_REFERRER = 'strict-origin-when-cross-origin'
+
 // Colour a track segment by boat speed: dark purple (slow) → bright orange
 // (fast). Hue stays in the warm purple–red–orange band that avoids the blue
 // water and green land of the base map, while lightness rises with speed so the
@@ -974,10 +982,12 @@ function drawTrack (host, points, events) {
   trackPoints = points
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
+    referrerPolicy: TILE_REFERRER,
     attribution: '© OpenStreetMap'
   }).addTo(map)
   L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', {
     maxZoom: 18,
+    referrerPolicy: TILE_REFERRER,
     attribution: '© OpenSeaMap'
   }).addTo(map)
 
@@ -1440,7 +1450,7 @@ async function openPlayback (fromMs, toMs) {
   // to updateInterval (200 ms) anyway, so following costs a handful of tile
   // passes a second, not one per frame. keepBuffer holds a ring of tiles just
   // outside the view so the edge the boat is heading for is already there.
-  const tiles = { updateWhenIdle: false, keepBuffer: 4 }
+  const tiles = { updateWhenIdle: false, keepBuffer: 4, referrerPolicy: TILE_REFERRER }
   const base = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     ...tiles, maxZoom: 19, attribution: '© OpenStreetMap'
   }).addTo(map)

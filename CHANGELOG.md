@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Every map read "Access blocked" instead of showing the chart.**
+  OpenStreetMap's tile policy blocks referer-stripped traffic, and the Signal K
+  server sends `Referrer-Policy: no-referrer`, so the browser asked for tiles
+  anonymously and OSM answered with its blocked-notice tile. It does so with a
+  normal HTTP 200, which is why nothing looked broken anywhere except on screen:
+  the network log is a wall of successful requests. Every tile layer — the trip
+  map, the playback map and the frames the video export renders — now sets its
+  own `referrerPolicy`, which an image is allowed to do regardless of the
+  document's, and identifies the page by origin alone.
+
 ## [0.10.1] - 2026-09-06
 
 ### Added

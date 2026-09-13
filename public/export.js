@@ -99,6 +99,10 @@ function exLoadTile (url) {
           // The tile servers send Access-Control-Allow-Origin: *, so the canvas
           // stays untainted and can be read back by the encoder.
           img.crossOrigin = 'anonymous'
+          // Without this the image inherits the page's `no-referrer` and OSM
+          // hands back its "blocked" tile — with a 200, so the frame renders and
+          // the whole film comes out papered with it. Same policy the map uses.
+          img.referrerPolicy = 'strict-origin-when-cross-origin'
           const timer = setTimeout(() => {
             img.src = ''
             reject(new Error('tile timeout'))
