@@ -39,7 +39,8 @@ module.exports = [
         fmtDuration: 'readonly', placeOf: 'readonly', sogColor: 'readonly',
         pb: 'readonly', pbBearing: 'readonly', pbPauseAfter: 'readonly',
         pbRenderToggle: 'readonly', pbLoop: 'readonly',
-        PB_SEC_PER_HOUR: 'readonly', PB_NIGHT_PAUSE_MS: 'readonly'
+        PB_SEC_PER_HOUR: 'readonly', PB_NIGHT_PAUSE_MS: 'readonly',
+        TILE_REFERRER: 'readonly'
       }
     }
   },

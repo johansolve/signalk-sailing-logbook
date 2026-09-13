@@ -16,6 +16,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   map, the playback map and the frames the video export renders — now sets its
   own `referrerPolicy`, which an image is allowed to do regardless of the
   document's, and identifies the page by origin alone.
+- **The video export fetches tiles two at a time instead of six.** Rendering a
+  film is the one thing here that asks a volunteer-run server for tiles nobody
+  is watching arrive, and a season-wide playback is thousands of them. The
+  parallelism bought little and is the sort of traffic that gets a client
+  blocked.
 
 ## [0.10.1] - 2026-09-06
 

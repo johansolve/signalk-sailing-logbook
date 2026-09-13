@@ -35,9 +35,11 @@ const EX_SIZES = {
 // Target bits per pixel per frame. Chosen so a 1080×1440 clip lands near
 // 2.5 Mbit/s — proven indistinguishable from the old 8 Mbit/s at a full crop.
 const EX_BITS_PER_PIXEL = 0.055
-// Tiles are fetched with a small pool: politeness to the tile servers, and a
-// stampede of a hundred parallel requests is slower than a steady few anyway.
-const EX_TILE_CONCURRENCY = 6
+// Tiles are fetched two at a time. Rendering a film is the one thing here that
+// asks a volunteer-run server for tiles nobody is watching arrive, so it takes
+// the slow lane: a stampede of parallel requests is barely faster than a steady
+// couple, and it is exactly what gets a client blocked.
+const EX_TILE_CONCURRENCY = 2
 const EX_TILE_RETRIES = 2
 // A tile that neither loads nor errors — a stalled connection the browser never
 // resets — would otherwise hold its slot in the pool for ever, and since the
@@ -100,9 +102,10 @@ function exLoadTile (url) {
           // stays untainted and can be read back by the encoder.
           img.crossOrigin = 'anonymous'
           // Without this the image inherits the page's `no-referrer` and OSM
-          // hands back its "blocked" tile — with a 200, so the frame renders and
-          // the whole film comes out papered with it. Same policy the map uses.
-          img.referrerPolicy = 'strict-origin-when-cross-origin'
+          // hands back its "blocked" tile — with a 200 and CORS open, so the
+          // frame renders and the whole film comes out papered with it. The map
+          // and the film must ask alike, so the policy is app.js's (TILE_REFERRER).
+          img.referrerPolicy = TILE_REFERRER
           const timer = setTimeout(() => {
             img.src = ''
             reject(new Error('tile timeout'))
