@@ -886,17 +886,25 @@ module.exports = function (app) {
         stop_lat: bounds.stop.lat,
         stop_lon: bounds.stop.lon
       }
+      // positions is ascending, so the nearest fix is one of the two around t.
       const nearestPos = (t) => {
-        let best = null
-        let bd = Infinity
-        for (const [pt, la, lo] of positions) {
-          const d = Math.abs(pt - t)
-          if (d < bd) {
-            bd = d
-            best = { lat: la, lon: lo }
+        if (!positions.length) {
+          return {}
+        }
+        let lo = 0
+        let hi = positions.length - 1
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1
+          if (positions[mid][0] < t) {
+            lo = mid + 1
+          } else {
+            hi = mid
           }
         }
-        return best || {}
+        const after = positions[lo]
+        const before = positions[lo - 1]
+        const pick = before && Math.abs(before[0] - t) <= Math.abs(after[0] - t) ? before : after
+        return { lat: pick[1], lon: pick[2] }
       }
       const md = createManeuverDetector(detectorOpts())
       // Its own gate, replaying this window's zero runs from the start rather
