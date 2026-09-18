@@ -690,35 +690,77 @@ module.exports = function (app) {
 
   // ---- retrospective scan --------------------------------------------------
 
+  // How much of the history one scan query covers. Three days keeps a single
+  // response in the low tens of thousands of buckets at the 15 s position step.
+  const SCAN_CHUNK_MS = 3 * 24 * 3600 * 1000
+  // Fine enough for the detector's trail: it wants five fixes inside the start
+  // window and calls a two-minute hole a gap.
+  const SCAN_FIX_STEP_SEC = 15
+
+  // The grid both scan series share, so a chunk boundary never splits a bucket.
+  function lcm (a, b) {
+    let x = a
+    let y = b
+    while (y) {
+      [x, y] = [y, x % y]
+    }
+    return (a / x) * b
+  }
+
   async function scan (fromMs, toMs, stepSec) {
-    const samples = await influx.sogSeries(fromMs, toMs, stepSec || 30)
-    // The detector reads the position trail as well as the speed, so replay the
-    // fixes into it interleaved with the speed samples, in time order.
-    const fixes = await influx.positionSeries(fromMs, toMs, 15)
     const detector = createTripDetector(detectorOpts())
     const found = []
     let open = null
-    let next = 0
-    samples.forEach(([t, sog]) => {
-      while (next < fixes.length && fixes[next][0] <= t) {
-        detector.feedPosition(fixes[next][0], fixes[next][1], fixes[next][2])
-        next += 1
+    let scanned = 0
+    const onStart = (startedAt) => {
+      open = { start: startedAt }
+    }
+    const onStop = (stoppedAt) => {
+      if (open) {
+        open.stop = stoppedAt
+        found.push(open)
+        open = null
       }
-      detector.feed(
-        t,
-        sog,
-        (startedAt) => {
-          open = { start: startedAt }
-        },
-        (stoppedAt) => {
-          if (open) {
-            open.stop = stoppedAt
-            found.push(open)
-            open = null
-          }
+    }
+    // A first backfill covers a whole season, so the window is walked in chunks
+    // instead of pulled in one answer: the position step has to stay fine
+    // enough to place a maneuver, and at 15 s a season is hundreds of thousands
+    // of buckets in a single response. The detector keeps its state and its
+    // trail across a boundary, and the chunks are contiguous, so the segments
+    // are the ones an unchunked pass would have found.
+    const sogStep = stepSec || 30
+    // GROUP BY time() buckets against the epoch, not against the window, so a
+    // boundary inside a bucket would return that bucket to both chunks, each
+    // time over half its samples. Cutting on the grid both series share leaves
+    // every bucket whole and in exactly one chunk.
+    const gridMs = lcm(sogStep * 1000, SCAN_FIX_STEP_SEC * 1000)
+    for (let chunkFrom = fromMs; chunkFrom <= toMs;) {
+      const nextGrid = Math.ceil((chunkFrom + SCAN_CHUNK_MS) / gridMs) * gridMs
+      // Both window bounds are inclusive, so a chunk ends the millisecond
+      // before the bucket that opens the next one.
+      const chunkTo = Math.min(nextGrid - 1, toMs)
+      const samples = await influx.sogSeries(chunkFrom, chunkTo, sogStep)
+      // The detector reads the position trail as well as the speed, so replay
+      // the fixes into it interleaved with the speed samples, in time order.
+      const fixes = await influx.positionSeries(chunkFrom, chunkTo, SCAN_FIX_STEP_SEC)
+      let next = 0
+      const feedFixesUpTo = (t) => {
+        while (next < fixes.length && (t == null || fixes[next][0] <= t)) {
+          detector.feedPosition(fixes[next][0], fixes[next][1], fixes[next][2])
+          next += 1
         }
-      )
-    })
+      }
+      samples.forEach(([t, sog]) => {
+        feedFixesUpTo(t)
+        detector.feed(t, sog, onStart, onStop)
+      })
+      // The fixes past the chunk's last speed sample are the trail an unchunked
+      // pass would have fed before the next chunk's first sample. Leaving them
+      // behind would open a hole at every boundary.
+      feedFixesUpTo(null)
+      scanned += samples.length
+      chunkFrom = chunkTo + 1
+    }
 
     const created = []
     for (const seg of found) {
@@ -728,7 +770,7 @@ module.exports = function (app) {
       const tripId = await createRetroTrip(seg.start, seg.stop)
       created.push(tripId)
     }
-    return { scanned: samples.length, segments: found.length, created: created.length }
+    return { scanned, segments: found.length, created: created.length }
   }
 
   async function createRetroTrip (startMs, stopMs) {
