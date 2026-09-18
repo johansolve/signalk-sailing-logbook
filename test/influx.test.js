@@ -151,6 +151,24 @@ describe('trackSeries', function () {
     }
   })
 
+  it('samples angles and averages the rest', async function () {
+    const { state, restore } = stubFetchCounting([
+      ...posResults([[1000, 59.0, 18.0]], []), ...fieldSeries({})
+    ])
+    try {
+      await influx.trackSeries(0, 2000, 15)
+      const q = state.queries[0]
+      for (const path of ['environment.wind.directionTrue',
+        'environment.wind.angleTrueWater', 'environment.wind.angleApparent']) {
+        assert.match(q, new RegExp(`first\\("value"\\) AS v FROM "${path.replace(/\./g, '\\.')}"`))
+      }
+      assert.match(q, /mean\("value"\) AS v FROM "navigation\.speedOverGround"/)
+      assert.match(q, /mean\("value"\) AS v FROM "navigation\.attitude\.roll"/)
+    } finally {
+      restore()
+    }
+  })
+
   it('drops unparseable and incomplete JSON positions', async function () {
     const restore = stubFetch([
       ...posResults([], [

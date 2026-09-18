@@ -483,8 +483,9 @@ function makeInflux (config) {
       // are the position, results[2..] the fields.
       const results = await run([
         ...positionStatements(w, step),
-        ...fields.map(([, path]) =>
-          `SELECT mean("value") AS v FROM "${quoteMeasurement(path)}" ` +
+        ...fields.map(([k, path]) =>
+          `SELECT ${ANGLE_KEYS.has(k) ? 'first' : 'mean'}("value") AS v ` +
+          `FROM "${quoteMeasurement(path)}" ` +
           `WHERE ${w} GROUP BY time(${step}s) fill(none)`)
       ])
       const maps = fields.map((_, i) => {
