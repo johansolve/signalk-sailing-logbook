@@ -30,6 +30,12 @@ const DEFAULT_PATHS = {
 // -179° is 0°, and of 359° and 1° is 180°.
 const ANGLE_KEYS = new Set(['twa', 'awa', 'twd'])
 
+// A track point is a moment, not a statistic, so heel is sampled there too: a
+// tack inside the bucket averages the heel to about zero while the sampled TWA
+// still shows a clear side, and the popup contradicts itself. Elsewhere heel is
+// a plain signed series a mean is right for.
+const TRACK_SAMPLED_KEYS = new Set([...ANGLE_KEYS, 'heel'])
+
 function quoteMeasurement (m) {
   return m.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
@@ -102,6 +108,13 @@ function makeInflux (config) {
       throw new Error('window bounds must be numeric epoch-ms')
     }
     return `time >= ${lo}ms AND time <= ${hi}ms`
+  }
+
+  // One channel's samples on the shared grid, averaged or sampled per key.
+  function channelStatement (k, w, step, sampled) {
+    return `SELECT ${sampled.has(k) ? 'first' : 'mean'}("value") AS v ` +
+      `FROM "${quoteMeasurement(paths[k])}" WHERE ${w} ` +
+      `GROUP BY time(${step}s) fill(none)`
   }
 
   // The two ways signalk-to-influxdb stores a position, asked for on one time
@@ -442,10 +455,8 @@ function makeInflux (config) {
       if (!fields.length) {
         return []
       }
-      const results = await run(fields.map((k) =>
-        `SELECT ${ANGLE_KEYS.has(k) ? 'first' : 'mean'}("value") AS v ` +
-        `FROM "${quoteMeasurement(paths[k])}" WHERE ${w} ` +
-        `GROUP BY time(${step}s) fill(none)`))
+      const results = await run(fields.map(
+        (k) => channelStatement(k, w, step, ANGLE_KEYS)))
       const rows = new Map()
       results.forEach((result, i) => {
         for (const [time, v] of result.values) {
@@ -475,18 +486,12 @@ function makeInflux (config) {
     async trackSeries (startMs, stopMs, stepSec) {
       const step = stepSec || 15
       const w = window(startMs, stopMs)
-      const fields = [
-        ['sog', paths.sog], ['stw', paths.stw], ['tws', paths.tws],
-        ['twd', paths.twd], ['twa', paths.twa], ['awa', paths.awa], ['heel', paths.heel]
-      ]
+      const fields = ['sog', 'stw', 'tws', 'twd', 'twa', 'awa', 'heel']
       // Both position statements, then the scalars: results[0] and results[1]
       // are the position, results[2..] the fields.
       const results = await run([
         ...positionStatements(w, step),
-        ...fields.map(([k, path]) =>
-          `SELECT ${ANGLE_KEYS.has(k) ? 'first' : 'mean'}("value") AS v ` +
-          `FROM "${quoteMeasurement(path)}" ` +
-          `WHERE ${w} GROUP BY time(${step}s) fill(none)`)
+        ...fields.map((k) => channelStatement(k, w, step, TRACK_SAMPLED_KEYS))
       ])
       const maps = fields.map((_, i) => {
         const mp = new Map()
@@ -499,7 +504,7 @@ function makeInflux (config) {
       })
       return mergePositions(results[0], results[1]).map((r) => {
         const point = { t: r[0], lat: r[1], lon: r[2] }
-        fields.forEach(([key], i) => {
+        fields.forEach((key, i) => {
           point[key] = maps[i].has(r[0]) ? maps[i].get(r[0]) : null
         })
         return point

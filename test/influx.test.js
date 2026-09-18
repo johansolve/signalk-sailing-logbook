@@ -151,7 +151,7 @@ describe('trackSeries', function () {
     }
   })
 
-  it('samples angles and averages the rest', async function () {
+  it('samples angles and heel, averages the speeds', async function () {
     const { state, restore } = stubFetchCounting([
       ...posResults([[1000, 59.0, 18.0]], []), ...fieldSeries({})
     ])
@@ -162,8 +162,10 @@ describe('trackSeries', function () {
         'environment.wind.angleTrueWater', 'environment.wind.angleApparent']) {
         assert.match(q, new RegExp(`first\\("value"\\) AS v FROM "${path.replace(/\./g, '\\.')}"`))
       }
+      // heel is sampled too: a tack inside the bucket would average it to zero.
+      assert.match(q, /first\("value"\) AS v FROM "navigation\.attitude\.roll"/)
       assert.match(q, /mean\("value"\) AS v FROM "navigation\.speedOverGround"/)
-      assert.match(q, /mean\("value"\) AS v FROM "navigation\.attitude\.roll"/)
+      assert.match(q, /mean\("value"\) AS v FROM "navigation\.speedThroughWater"/)
     } finally {
       restore()
     }
