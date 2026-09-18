@@ -114,6 +114,9 @@ main {
   color: var(--muted);
   align-self: center;
 }
+.scan-result.warn {
+  color: var(--danger);
+}
 
 /* year filter and season summary */
 /* Both are flex, and an author display beats the UA's [hidden] rule, so they

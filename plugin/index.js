@@ -701,6 +701,9 @@ module.exports = function (app) {
   function lcm (a, b) {
     let x = a
     let y = b
+  // Work is O(window), one query pair per chunk: cap it against a mistyped year.
+  const SCAN_MAX_RANGE_DAYS = 730
+  const SCAN_MAX_RANGE_MS = SCAN_MAX_RANGE_DAYS * 24 * 3600 * 1000
     while (y) {
       [x, y] = [y, x % y]
     }
@@ -709,7 +712,7 @@ module.exports = function (app) {
 
   async function scan (fromMs, toMs, stepSec) {
     const detector = createTripDetector(detectorOpts())
-    const found = []
+    const pending = []
     let open = null
     let scanned = 0
     const onStart = (startedAt) => {
@@ -717,17 +720,45 @@ module.exports = function (app) {
     }
     const onStop = (stoppedAt) => {
       if (open) {
+    let segments = 0
+    const created = []
         open.stop = stoppedAt
-        found.push(open)
+        pending.push(open)
+        segments += 1
         open = null
       }
     }
-    // A first backfill covers a whole season, so the window is walked in chunks
-    // instead of pulled in one answer: the position step has to stay fine
-    // enough to place a maneuver, and at 15 s a season is hundreds of thousands
-    // of buckets in a single response. The detector keeps its state and its
-    // trail across a boundary, and the chunks are contiguous, so the segments
-    // are the ones an unchunked pass would have found.
+    // Written per chunk, not after the walk: a late failure keeps what scanned.
+    const writeFound = async () => {
+      while (pending.length) {
+        const seg = pending.shift()
+        if (db.findOverlapping(seg.start, seg.stop)) {
+          continue
+        }
+        created.push(await createRetroTrip(seg.start, seg.stop))
+      }
+    }
+    // One chunk's two series, one retry.
+    const readChunk = async (chunkFrom, chunkTo) => {
+      const read = () => Promise.all([
+        influx.sogSeries(chunkFrom, chunkTo, sogStep),
+        // Detector reads the trail too; fixes replay interleaved, in time order.
+        influx.positionSeries(chunkFrom, chunkTo, SCAN_FIX_STEP_SEC)
+      ])
+      try {
+        return await read()
+      } catch (e) {
+        // 4xx (auth, unknown database) cannot succeed on a retry.
+        if (/HTTP 4\d\d/.test(e.message)) {
+          throw e
+        }
+        app.debug(`scan chunk ${chunkFrom}-${chunkTo} failed (${e.message}); retrying`)
+        return read()
+      }
+    }
+    // Chunked: a season at 15 s is >500k buckets in one response. Detector state
+    // and trail survive a boundary, and chunks are contiguous, so the segments
+    // match an unchunked pass.
     const sogStep = stepSec || 30
     // GROUP BY time() buckets against the epoch, not against the window, so a
     // boundary inside a bucket would return that bucket to both chunks, each
@@ -737,12 +768,22 @@ module.exports = function (app) {
     for (let chunkFrom = fromMs; chunkFrom <= toMs;) {
       const nextGrid = Math.ceil((chunkFrom + SCAN_CHUNK_MS) / gridMs) * gridMs
       // Both window bounds are inclusive, so a chunk ends the millisecond
+    let incompleteFrom = null
+    let failure = null
       // before the bucket that opens the next one.
       const chunkTo = Math.min(nextGrid - 1, toMs)
-      const samples = await influx.sogSeries(chunkFrom, chunkTo, sogStep)
-      // The detector reads the position trail as well as the speed, so replay
-      // the fixes into it interleaved with the speed samples, in time order.
-      const fixes = await influx.positionSeries(chunkFrom, chunkTo, SCAN_FIX_STEP_SEC)
+      let samples
+      let fixes
+      try {
+        [samples, fixes] = await readChunk(chunkFrom, chunkTo)
+      } catch (e) {
+        // Resume point, reported to the caller. An open trip dies with the
+        // detector, so it is that trip's start: resuming at the chunk would
+        // record it from the boundary instead.
+        incompleteFrom = open ? open.start : chunkFrom
+        failure = e
+        break
+      }
       let next = 0
       const feedFixesUpTo = (t) => {
         while (next < fixes.length && (t == null || fixes[next][0] <= t)) {
@@ -760,17 +801,17 @@ module.exports = function (app) {
       feedFixesUpTo(null)
       scanned += samples.length
       chunkFrom = chunkTo + 1
+      await writeFound()
     }
 
-    const created = []
-    for (const seg of found) {
-      if (db.findOverlapping(seg.start, seg.stop)) {
-        continue
-      }
-      const tripId = await createRetroTrip(seg.start, seg.stop)
-      created.push(tripId)
+    await writeFound()
+    const result = { scanned, segments, created: created.length }
+    if (incompleteFrom != null) {
+      app.error(`scan stopped at ${new Date(incompleteFrom).toISOString()}: ${failure.message}`)
+      result.incompleteFrom = incompleteFrom
+      result.error = failure.message
     }
-    return { scanned, segments: found.length, created: created.length }
+    return result
   }
 
   async function createRetroTrip (startMs, stopMs) {
@@ -1499,6 +1540,12 @@ module.exports = function (app) {
       }
       try {
         const result = await scan(from, to, stepSec)
+      // See SCAN_MAX_RANGE_DAYS.
+      if (to - from > SCAN_MAX_RANGE_MS) {
+        return res.status(400).json({
+          error: `range must be at most ${SCAN_MAX_RANGE_DAYS} days; scan a season at a time`
+        })
+      }
         res.json(result)
       } catch (e) {
         app.error(`scan failed: ${e.message}`)
@@ -1513,7 +1560,15 @@ module.exports = function (app) {
     paths: {
       '/trips': { get: { summary: 'List trips', responses: { 200: { description: 'ok' } } } },
       '/trips/{id}': { get: { summary: 'Trip detail with hourly stats', responses: { 200: { description: 'ok' } } } },
-      '/scan': { post: { summary: 'Retrospectively detect trips from InfluxDB', responses: { 200: { description: 'ok' } } } }
+      '/scan': {
+        post: {
+          summary: 'Retrospectively detect trips from InfluxDB',
+          responses: {
+            200: { description: 'ok; incompleteFrom set when the scan stopped early' },
+            400: { description: `from/to missing, to <= from, or a range over ${SCAN_MAX_RANGE_DAYS} days` }
+          }
+        }
+      }
     }
   })
 

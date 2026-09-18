@@ -195,7 +195,10 @@ Admin only, under `/plugins/signalk-sailing-logbook`:
 - `PUT /trips/:id/notes` — set or clear the trip's free-text notes
 - `DELETE /trips/:id` — delete a trip
 - `DELETE /events/:id` — delete a single maneuver
-- `POST /scan` — `{ from, to }` (ms epoch): retrospectively detect trips
+- `POST /scan` — `{ from, to }` (ms epoch): retrospectively detect trips. The
+  range is capped at 730 days. The window is walked in three-day chunks and
+  trips are written as it goes, so a chunk that fails after one retry ends the
+  scan with `incompleteFrom` in the response rather than discarding the rest.
 
 ## How it works
 

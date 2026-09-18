@@ -75,7 +75,8 @@ const STR = {
     couldNotFetchReport: 'Could not fetch report: ', couldNotRemove: 'Could not remove maneuver: ',
     couldNotDelete: 'Could not delete: ', confirmDeleteTrip: 'Delete this trip permanently?',
     pickDates: 'Pick a from and to date', scanning: 'Scanning…', error: 'Error: ',
-    scanDone: (c, f, s) => `Done: ${c} new trips (${f} found, ${s} samples).`
+    scanDone: (c, f, s) => `Done: ${c} new trips (${f} found, ${s} samples).`,
+    scanIncomplete: (c, d) => `Incomplete: stopped at ${d}, ${c} new trips before it.`
   },
   sv: {
     locale: 'sv-SE', pctSpace: true,
@@ -140,7 +141,8 @@ const STR = {
     couldNotFetchReport: 'Kunde inte hämta rapport: ', couldNotRemove: 'Kunde inte ta bort manöver: ',
     couldNotDelete: 'Kunde inte ta bort: ', confirmDeleteTrip: 'Ta bort denna trip permanent?',
     pickDates: 'Välj från- och till-datum', scanning: 'Skannar…', error: 'Fel: ',
-    scanDone: (c, f, s) => `Klart: ${c} nya trips (${f} hittade, ${s} sampel).`
+    scanDone: (c, f, s) => `Klart: ${c} nya trips (${f} hittade, ${s} sampel).`,
+    scanIncomplete: (c, d) => `Ofullständig: avbröts vid ${d}, ${c} nya trips dessförinnan.`
   }
 }
 
@@ -1344,7 +1346,12 @@ async function runScan () {
     if (!r.ok) {
       throw new Error(data.error || `HTTP ${r.status}`)
     }
-    $('#scan-result').textContent = t('scanDone')(data.created, data.segments, data.scanned)
+    // Partial scan: trips before the cut were created, the rest never ran.
+    const cut = data.incompleteFrom
+    $('#scan-result').classList.toggle('warn', cut != null)
+    $('#scan-result').textContent = cut != null
+      ? t('scanIncomplete')(data.created, `${fmtDate(cut)} ${fmtTime(cut)}`)
+      : t('scanDone')(data.created, data.segments, data.scanned)
     loadList()
   } catch (e) {
     $('#scan-result').textContent = t('error') + e.message
@@ -1373,6 +1380,7 @@ function pbTeardown () {
     return
   }
   if (pb.raf) {
+  $('#scan-result').classList.remove('warn')
     cancelAnimationFrame(pb.raf)
   }
   if (pb.map) {
@@ -1390,6 +1398,7 @@ function pbLoop () {
   }
   cancelAnimationFrame(pb.raf)
   pb.last = performance.now()
+    $('#scan-result').classList.add('warn')
   pb.raf = requestAnimationFrame(pbFrame)
 }
 
