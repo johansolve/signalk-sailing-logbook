@@ -697,20 +697,18 @@ module.exports = function (app) {
 
   // ---- retrospective scan --------------------------------------------------
 
-  // How much of the history one scan query covers. Three days keeps a single
-  // response in the low tens of thousands of buckets at the 15 s position step.
+  // One scan query's span: 3 d is ~17k position buckets at 15 s.
   const SCAN_CHUNK_MS = 3 * 24 * 3600 * 1000
-  // Fine enough for the detector's trail: it wants five fixes inside the start
-  // window and calls a two-minute hole a gap.
+  // Detector wants 5 fixes per start window and reads a 120 s hole as no trail.
   const SCAN_FIX_STEP_SEC = 15
-
-  // The grid both scan series share, so a chunk boundary never splits a bucket.
-  function lcm (a, b) {
-    let x = a
-    let y = b
   // Work is O(window), one query pair per chunk: cap it against a mistyped year.
   const SCAN_MAX_RANGE_DAYS = 730
   const SCAN_MAX_RANGE_MS = SCAN_MAX_RANGE_DAYS * 24 * 3600 * 1000
+
+  // Shared bucket grid of the two scan series; chunk boundaries snap to it.
+  function lcm (a, b) {
+    let x = a
+    let y = b
     while (y) {
       [x, y] = [y, x % y]
     }
@@ -722,13 +720,13 @@ module.exports = function (app) {
     const pending = []
     let open = null
     let scanned = 0
+    let segments = 0
+    const created = []
     const onStart = (startedAt) => {
       open = { start: startedAt }
     }
     const onStop = (stoppedAt) => {
       if (open) {
-    let segments = 0
-    const created = []
         open.stop = stoppedAt
         pending.push(open)
         segments += 1
@@ -767,17 +765,14 @@ module.exports = function (app) {
     // and trail survive a boundary, and chunks are contiguous, so the segments
     // match an unchunked pass.
     const sogStep = stepSec || 30
-    // GROUP BY time() buckets against the epoch, not against the window, so a
-    // boundary inside a bucket would return that bucket to both chunks, each
-    // time over half its samples. Cutting on the grid both series share leaves
-    // every bucket whole and in exactly one chunk.
+    // GROUP BY time() aligns to the epoch: a boundary inside a bucket returns
+    // that bucket to both chunks, each over half its samples.
     const gridMs = lcm(sogStep * 1000, SCAN_FIX_STEP_SEC * 1000)
-    for (let chunkFrom = fromMs; chunkFrom <= toMs;) {
-      const nextGrid = Math.ceil((chunkFrom + SCAN_CHUNK_MS) / gridMs) * gridMs
-      // Both window bounds are inclusive, so a chunk ends the millisecond
     let incompleteFrom = null
     let failure = null
-      // before the bucket that opens the next one.
+    for (let chunkFrom = fromMs; chunkFrom <= toMs;) {
+      const nextGrid = Math.ceil((chunkFrom + SCAN_CHUNK_MS) / gridMs) * gridMs
+      // Bounds are inclusive: end 1 ms before the next chunk's first bucket.
       const chunkTo = Math.min(nextGrid - 1, toMs)
       let samples
       let fixes
@@ -802,16 +797,15 @@ module.exports = function (app) {
         feedFixesUpTo(t)
         detector.feed(t, sog, onStart, onStop)
       })
-      // The fixes past the chunk's last speed sample are the trail an unchunked
-      // pass would have fed before the next chunk's first sample. Leaving them
-      // behind would open a hole at every boundary.
+      // Fixes past the last speed sample: the trail before the next chunk's
+      // first sample. Dropping them opens a hole at every boundary.
       feedFixesUpTo(null)
       scanned += samples.length
-      chunkFrom = chunkTo + 1
       await writeFound()
+      chunkFrom = chunkTo + 1
     }
-
     await writeFound()
+
     const result = { scanned, segments, created: created.length }
     if (incompleteFrom != null) {
       app.error(`scan stopped at ${new Date(incompleteFrom).toISOString()}: ${failure.message}`)
@@ -1015,13 +1009,13 @@ module.exports = function (app) {
     db = dbLib.open(options.dbPath || path.join(app.getDataDirPath(), 'logbook.sqlite'))
     // Migrate pre-registry manual place names into the shared places table once.
     seedPlacesOnce()
-      timeoutMs: (options.influxTimeoutSeconds > 0 ? options.influxTimeoutSeconds : 30) * 1000,
     influx = influxLib.makeInflux({
       host: options.influxHost,
       port: options.influxPort,
       database: options.database,
       username: options.username,
       password: options.password,
+      timeoutMs: (options.influxTimeoutSeconds > 0 ? options.influxTimeoutSeconds : 30) * 1000,
       paths: { engineState: options.engineStatePath || 'propulsion.0.state' }
     })
 
@@ -1244,15 +1238,15 @@ module.exports = function (app) {
     const base = tripDetail(id)
     if (!base) {
       return res.status(404).json({ error: 'not found' })
-  // Coarsest track bucket: past this a sampled angle stands for whole minutes.
-  const TRACK_MAX_STEP_SEC = 60
-
     }
     res.json({
       trip: Object.assign({}, base.trip, { motor: motorTrip(base.trip) }),
       events: base.events
     })
   }
+  // Coarsest track bucket: past this a sampled angle stands for whole minutes.
+  const TRACK_MAX_STEP_SEC = 60
+
   // The trip's hourly statistics, the expensive part of the detail. Served on its
   // own so the rest of the view isn't held up by it, and cached per completed trip.
   async function hourlyHandler (req, res) {
@@ -1546,6 +1540,12 @@ module.exports = function (app) {
       if (!from || !to || to <= from) {
         return res.status(400).json({ error: 'from/to (ms epoch) required, to > from' })
       }
+      // See SCAN_MAX_RANGE_DAYS.
+      if (to - from > SCAN_MAX_RANGE_MS) {
+        return res.status(400).json({
+          error: `range must be at most ${SCAN_MAX_RANGE_DAYS} days; scan a season at a time`
+        })
+      }
       let stepSec
       if (body.stepSec != null) {
         stepSec = parseInt(body.stepSec, 10)
@@ -1555,12 +1555,6 @@ module.exports = function (app) {
       }
       try {
         const result = await scan(from, to, stepSec)
-      // See SCAN_MAX_RANGE_DAYS.
-      if (to - from > SCAN_MAX_RANGE_MS) {
-        return res.status(400).json({
-          error: `range must be at most ${SCAN_MAX_RANGE_DAYS} days; scan a season at a time`
-        })
-      }
         res.json(result)
       } catch (e) {
         app.error(`scan failed: ${e.message}`)

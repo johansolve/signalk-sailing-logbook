@@ -413,9 +413,7 @@ async function loadDetail (id) {
     // header, map and controls at once; the expensive hourly stats and the track
     // load separately so the page isn't held up by either.
     const data = await getJSON(`${READ}/trips/${id}`)
-    // A late response for a trip we've since navigated away from is dropped,
-    // the same guard loadHourly has: two quick clicks must not paint trip A
-    // into a view whose hourly table and controls belong to trip B.
+    // Late response for a trip we've left; same guard as loadHourly.
     if (id !== currentDetailId) {
       return
     }
@@ -751,6 +749,8 @@ const TILE_REFERRER = 'strict-origin-when-cross-origin'
 // Colour a track segment by boat speed: dark purple (slow) → bright orange
 // (fast). Hue stays in the warm purple–red–orange band that avoids the blue
 // water and green land of the base map, while lightness rises with speed so the
+// variation reads clearly (hue alone within a narrow band was near-invisible).
+// A segment whose SOG is unknown gets a neutral grey.
 // Band null is "speed unknown": drawn grey, never as the slowest band.
 const TRACK_SPEED_BANDS = 8
 
@@ -765,8 +765,6 @@ function trackBand (v, lo, hi) {
   return Math.max(0, Math.min(TRACK_SPEED_BANDS - 1, Math.floor(f * TRACK_SPEED_BANDS)))
 }
 
-// variation reads clearly (hue alone within a narrow band was near-invisible).
-// A segment whose SOG is unknown gets a neutral grey.
 function sogColor (v, lo, hi) {
   if (v == null) {
     return '#888'
@@ -1065,9 +1063,9 @@ function drawTrack (host, points, events) {
     if (!run.length) {
       run.push(latlngs[i - 1])
     }
-  flushRun()
     run.push(latlngs[i])
   }
+  flushRun()
 
   // A fat transparent line over the whole track gives a comfortable click/tap
   // target (the coloured line is thin, awkward to hit on touch). Clicking it
@@ -1377,6 +1375,7 @@ async function runScan () {
   }
   const from = new Date(fromStr + 'T00:00:00').getTime()
   const to = new Date(toStr + 'T23:59:59').getTime()
+  $('#scan-result').classList.remove('warn')
   $('#scan-result').textContent = t('scanning')
   try {
     const r = await fetch(`${ADMIN}/scan`, {
@@ -1399,6 +1398,7 @@ async function runScan () {
       : t('scanDone')(data.created, data.segments, data.scanned)
     loadList()
   } catch (e) {
+    $('#scan-result').classList.add('warn')
     $('#scan-result').textContent = t('error') + e.message
   }
 }
@@ -1425,7 +1425,6 @@ function pbTeardown () {
     return
   }
   if (pb.raf) {
-  $('#scan-result').classList.remove('warn')
     cancelAnimationFrame(pb.raf)
   }
   if (pb.map) {
@@ -1443,7 +1442,6 @@ function pbLoop () {
   }
   cancelAnimationFrame(pb.raf)
   pb.last = performance.now()
-    $('#scan-result').classList.add('warn')
   pb.raf = requestAnimationFrame(pbFrame)
 }
 
@@ -2108,9 +2106,8 @@ function showView (which) {
   // linger hidden.
   if (which !== 'detail') {
     teardownTrack()
-    // Leaving the view also drops the trip it was loading: a response still on
-    // its way must not render a map into the hidden view we just tore down, nor
-    // write its error over the list's status line.
+    // Drop the pending trip too: no render into the torn-down map, no error
+    // over the list's status line.
     currentDetailId = null
     currentDetailTrip = null
   }

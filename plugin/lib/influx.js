@@ -30,10 +30,9 @@ const DEFAULT_PATHS = {
 // -179° is 0°, and of 359° and 1° is 180°.
 const ANGLE_KEYS = new Set(['twa', 'awa', 'twd'])
 
-// A track point is a moment, not a statistic, so heel is sampled there too: a
-// tack inside the bucket averages the heel to about zero while the sampled TWA
-// still shows a clear side, and the popup contradicts itself. Elsewhere heel is
-// a plain signed series a mean is right for.
+// Track points are moments: a tack inside the bucket averages heel to about
+// zero beside a sampled TWA that shows a clear side. Elsewhere heel is a signed
+// series and mean() is right.
 const TRACK_SAMPLED_KEYS = new Set([...ANGLE_KEYS, 'heel'])
 
 function quoteMeasurement (m) {
