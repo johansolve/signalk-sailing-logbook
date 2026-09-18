@@ -170,7 +170,14 @@ module.exports = function (app) {
       influxPort: { type: 'number', title: 'InfluxDB port', default: 8086 },
       database: { type: 'string', title: 'InfluxDB database', default: 'libelle' },
       username: { type: 'string', title: 'InfluxDB username (blank if auth off)', default: '' },
-      password: { type: 'string', title: 'InfluxDB password (blank if auth off)', default: '' }
+      password: { type: 'string', title: 'InfluxDB password (blank if auth off)', default: '' },
+      influxTimeoutSeconds: {
+        type: 'number',
+        minimum: 1,
+        title: 'InfluxDB query timeout (s)',
+        description: 'Per request. Raise it if a slow database aborts a scan or a long track.',
+        default: 30
+      }
     }
   }
 
@@ -996,7 +1003,8 @@ module.exports = function (app) {
         influxPort: 8086,
         database: 'libelle',
         username: '',
-        password: ''
+        password: '',
+        influxTimeoutSeconds: 30
       },
       opts || {}
     )
@@ -1007,6 +1015,7 @@ module.exports = function (app) {
     db = dbLib.open(options.dbPath || path.join(app.getDataDirPath(), 'logbook.sqlite'))
     // Migrate pre-registry manual place names into the shared places table once.
     seedPlacesOnce()
+      timeoutMs: (options.influxTimeoutSeconds > 0 ? options.influxTimeoutSeconds : 30) * 1000,
     influx = influxLib.makeInflux({
       host: options.influxHost,
       port: options.influxPort,
