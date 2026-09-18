@@ -411,10 +411,19 @@ async function loadDetail (id) {
     // header, map and controls at once; the expensive hourly stats and the track
     // load separately so the page isn't held up by either.
     const data = await getJSON(`${READ}/trips/${id}`)
+    // A late response for a trip we've since navigated away from is dropped,
+    // the same guard loadHourly has: two quick clicks must not paint trip A
+    // into a view whose hourly table and controls belong to trip B.
+    if (id !== currentDetailId) {
+      return
+    }
     renderDetail(data)
     setStatus('')
     loadHourly(id)
   } catch (e) {
+    if (id !== currentDetailId) {
+      return
+    }
     $('#detail').innerHTML = ''
     setStatus(t('couldNotLoadTrip') + e.message, true)
   }
@@ -2045,6 +2054,11 @@ function showView (which) {
   // linger hidden.
   if (which !== 'detail') {
     teardownTrack()
+    // Leaving the view also drops the trip it was loading: a response still on
+    // its way must not render a map into the hidden view we just tore down, nor
+    // write its error over the list's status line.
+    currentDetailId = null
+    currentDetailTrip = null
   }
   if (which !== 'playback') {
     pbTeardown()
