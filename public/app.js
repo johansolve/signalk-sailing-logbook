@@ -751,6 +751,20 @@ const TILE_REFERRER = 'strict-origin-when-cross-origin'
 // Colour a track segment by boat speed: dark purple (slow) → bright orange
 // (fast). Hue stays in the warm purple–red–orange band that avoids the blue
 // water and green land of the base map, while lightness rises with speed so the
+// Band null is "speed unknown": drawn grey, never as the slowest band.
+const TRACK_SPEED_BANDS = 8
+
+function trackBand (v, lo, hi) {
+  if (v == null) {
+    return null
+  }
+  if (hi <= lo) {
+    return 0
+  }
+  const f = (v - lo) / (hi - lo)
+  return Math.max(0, Math.min(TRACK_SPEED_BANDS - 1, Math.floor(f * TRACK_SPEED_BANDS)))
+}
+
 // variation reads clearly (hue alone within a narrow band was near-invisible).
 // A segment whose SOG is unknown gets a neutral grey.
 function sogColor (v, lo, hi) {
@@ -1002,26 +1016,57 @@ function drawTrack (host, points, events) {
     attribution: '© OpenSeaMap'
   }).addTo(map)
 
-  const sogs = points.map((p) => p.sog).filter((s) => s != null)
-  const lo = sogs.length ? Math.min(...sogs) : 0
-  const hi = sogs.length ? Math.max(...sogs) : 0
+  // reduce, not Math.min(...sogs): a multi-day track is tens of thousands of
+  // points and a spread that wide can overflow the argument limit.
+  let lo = Infinity
+  let hi = -Infinity
+  for (const p of points) {
+    if (p.sog != null) {
+      lo = Math.min(lo, p.sog)
+      hi = Math.max(hi, p.sog)
+    }
+  }
+  const hasSog = lo !== Infinity
+  if (!hasSog) {
+    lo = 0
+    hi = 0
+  }
   const latlngs = points.map((p) => [p.lat, p.lon])
 
   // A white casing under the whole track guarantees the thin coloured line
   // separates from any tile background (land, water or forest).
   L.polyline(latlngs, { color: '#fff', weight: 6, opacity: 0.7 }).addTo(map)
 
-  // One short polyline per step, coloured by the mean speed of its two ends, so
-  // the whole track reads as a speed heat-line.
+  // Speed heat-line, quantised into bands so consecutive steps at a similar
+  // speed extend one polyline. A day at the 60 s step is 1440 steps and a long
+  // passage several thousand; one path per step makes the map crawl. Playback
+  // bands the same way (PB_SPEED_BANDS).
+  let runBand = null
+  let run = []
+  const flushRun = () => {
+    if (run.length > 1) {
+      L.polyline(run, {
+        color: runBand == null ? '#888' : sogColor(lo + ((runBand + 0.5) / TRACK_SPEED_BANDS) * (hi - lo), lo, hi),
+        weight: 3,
+        opacity: 0.9
+      }).addTo(map)
+    }
+    run = run.length ? [run[run.length - 1]] : []
+  }
   for (let i = 1; i < points.length; i++) {
     const a = points[i - 1]
     const b = points[i]
     const s = a.sog != null && b.sog != null ? (a.sog + b.sog) / 2 : (a.sog != null ? a.sog : b.sog)
-    L.polyline([latlngs[i - 1], latlngs[i]], {
-      color: sogColor(s, lo, hi),
-      weight: 3,
-      opacity: 0.9
-    }).addTo(map)
+    const band = trackBand(s, lo, hi)
+    if (band !== runBand) {
+      flushRun()
+      runBand = band
+    }
+    if (!run.length) {
+      run.push(latlngs[i - 1])
+    }
+  flushRun()
+    run.push(latlngs[i])
   }
 
   // A fat transparent line over the whole track gives a comfortable click/tap
@@ -1071,7 +1116,7 @@ function drawTrack (host, points, events) {
   buildScrubber(points, events)
 
   // Speed legend (purple→orange gradient with the min/max in knots).
-  if (sogs.length) {
+  if (hasSog) {
     const legend = L.control({ position: 'bottomleft' })
     legend.onAdd = () => {
       const div = L.DomUtil.create('div', 'track-legend')

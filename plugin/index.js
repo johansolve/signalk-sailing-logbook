@@ -1244,6 +1244,9 @@ module.exports = function (app) {
     const base = tripDetail(id)
     if (!base) {
       return res.status(404).json({ error: 'not found' })
+  // Coarsest track bucket: past this a sampled angle stands for whole minutes.
+  const TRACK_MAX_STEP_SEC = 60
+
     }
     res.json({
       trip: Object.assign({}, base.trip, { motor: motorTrip(base.trip) }),
@@ -1291,8 +1294,11 @@ module.exports = function (app) {
     if (!trip.start_time || stopMs <= trip.start_time) {
       return res.json({ points: [], reason: 'no-window' })
     }
-    // Aim for ~600 points; never finer than 5 s.
-    const stepSec = Math.max(5, Math.round((stopMs - trip.start_time) / 1000 / 600))
+    // ~600 points, floor 5 s, ceiling a minute (1440 points per day at it):
+    // angles and heel are sampled, so a coarser bucket misreports the moment.
+    const stepSec = Math.min(
+      TRACK_MAX_STEP_SEC,
+      Math.max(5, Math.round((stopMs - trip.start_time) / 1000 / 600)))
     try {
       const points = await influx.trackSeries(trip.start_time, stopMs, stepSec)
       // Too little to draw a line: say which case it is, so the webapp can tell
